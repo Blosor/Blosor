@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Blosor</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app"></div>
+
+<!-- ===== GAME ===== -->
+<div id="gameUI" class="hidden">
+  <div id="gameCanvas"></div>
+  <div id="uw" class="hidden"></div>
+  <div id="sgui"></div>
+
+  <button id="exitBtn">✷</button>
+  <button id="chatBtn">💬</button>
+  <button id="outBtn" class="hidden">⌨</button>
+  <div id="srv">👥 1/1</div>
+  <div id="msg" class="hidden"></div>
+
+  <div id="chatBox" class="hidden">
+    <div id="chatLog"></div>
+    <div id="chatRow">
+      <input id="chatIn" maxlength="120" placeholder="Type a message..." autocomplete="off">
+      <button id="chatSend">➤</button>
+    </div>
+  </div>
+
+  <div id="outBox" class="hidden"><div class="oh">Output</div><div id="outLog"></div></div>
+
+  <div id="hp">
+    <div id="hpLbl">Health</div>
+    <div id="hpBar"><div id="hpFill"></div><span id="hpTxt">200/200</span></div>
+  </div>
+  <div id="zoomBtns"><button id="zIn">＋</button><button id="zOut">－</button></div>
+
+  <div id="hotbar"></div>
+
+  <div id="joy"><div id="knob"></div></div>
+  <button id="jumpBtn" data-k=" ">⬆</button>
+
+  <div id="death" class="hidden">
+    <h1>You Died</h1>
+    <p id="deathCount"></p>
+    <button id="respawnBtn">↻ Respawn Now</button>
+  </div>
+
+  <div id="leaveDlg" class="hidden">
+    <div class="card dlg">
+      <h3>Leave the game?</h3>
+      <p class="muted" style="margin-bottom:8px">Your progress in this game will not be saved.</p>
+      <button id="leaveYes" class="red">Yes, Leave</button>
+      <button id="leaveNo" class="gray">Keep Playing</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== BLOSOR STUDIO ===== -->
+<div id="studio" class="hidden" data-mode="map">
+  <div id="stTitle">
+    <b class="stLogo">✷</b>
+    <button class="mtab on" data-m="map">Map</button>
+    <button class="mtab" data-m="avatar">Avatar</button>
+    <span id="stName"></span><span id="stDirty"></span><span class="sp"></span>
+    <button class="redb" data-act="close">✕</button>
+  </div>
+
+  <div id="stRibbon">
+    <div class="grp"><div class="gb">
+      <button data-tool="select" class="on"><i>🖱</i>Select</button>
+      <button data-tool="move"><i>✥</i>Move</button>
+      <button data-tool="scale"><i>⤡</i>Scale</button>
+      <button data-act="multi" id="multiBtn"><i>☑</i>Multi</button>
+    </div><div class="gl">Tools</div></div>
+
+    <div class="grp"><div class="gb">
+      <button data-act="add"><i>🧱</i>Part</button>
+      <button data-act="addWater" class="only-map"><i>💧</i>Water</button>
+      <button data-act="addLava" class="only-map"><i>🔥</i>Lava</button>
+      <button data-act="addLadder" class="only-map"><i>🪜</i>Ladder</button>
+      <button data-act="addPad" class="only-map"><i>⏫</i>Jump pad</button>
+      <button data-act="addSeat" class="only-map"><i>🪑</i>Seat</button>
+      <button data-act="addModel" class="only-map"><i>📦</i>Model</button>
+      <button data-act="addFolder" class="only-map"><i>📁</i>Folder</button>
+      <button data-act="addItem" class="only-map"><i>🗡</i>Item</button>
+      <button data-act="addScript" class="only-map"><i>📜</i>Script</button>
+      <button data-act="addLScript" class="only-map"><i>🖥</i>LocalScript</button>
+    </div><div class="gl">Insert</div></div>
+
+    <div class="grp only-map"><div class="gb">
+      <button data-act="addGui"><i>🖼</i>ScreenGui</button>
+      <button data-act="addBtn"><i>🔘</i>Button</button>
+      <button data-act="addLbl"><i>🏷</i>Label</button>
+    </div><div class="gl">StarterGui</div></div>
+
+    <div class="grp only-avatar"><div class="gb">
+      <button data-tpl="tshirt"><i>👕</i>T-Shirt</button>
+      <button data-tpl="pants"><i>👖</i>Pants</button>
+      <button data-tpl="shoes"><i>👟</i>Shoes</button>
+      <button data-tpl="gloves"><i>🧤</i>Gloves</button>
+      <button data-tpl="hat"><i>🎩</i>Hat</button>
+    </div><div class="gl">Templates</div></div>
+
+    <div class="grp"><div class="gb">
+      <button data-act="rename"><i>✎</i>Rename</button>
+      <button data-act="dup"><i>⧉</i>Duplicate</button>
+      <button data-act="del"><i>🗑</i>Delete</button>
+      <button data-act="cut"><i>✂</i>Cut</button>
+      <button data-act="copy"><i>📋</i>Copy</button>
+      <button data-act="paste"><i>📥</i>Paste</button>
+      <button data-act="rotate"><i>⟳</i>Rotate</button>
+      <button data-act="flipX"><i>⇋</i>Flip X</button>
+      <button data-act="flipZ"><i>⇅</i>Flip Z</button>
+      <button data-act="focus"><i>🎯</i>Focus</button>
+    </div><div class="gl">Edit</div></div>
+
+    <div class="grp only-map"><div class="gb">
+      <button data-act="group"><i>🗃</i>Group</button>
+      <button data-act="groupF"><i>🗂</i>To Folder</button>
+      <button data-act="ungroup"><i>🗄</i>Ungroup</button>
+      <button data-act="into"><i>⤵</i>Into</button>
+      <button data-act="out"><i>⤴</i>Out</button>
+      <button data-act="toSP"><i>🎒</i>→ StarterPack</button>
+      <button data-act="toWS"><i>🌐</i>→ Workspace</button>
+      <button data-act="code"><i>📝</i>Code</button>
+    </div><div class="gl">Organize</div></div>
+
+    <div class="grp"><div class="gb">
+      <button data-act="undo"><i>↶</i>Undo</button>
+      <button data-act="redo"><i>↷</i>Redo</button>
+      <label class="snap"><i>🧲</i>Snap
+        <input id="stSnap" type="number" min="0" step="0.25" value="1">
+      </label>
+    </div><div class="gl">History</div></div>
+
+    <div class="grp"><div class="gb">
+      <button data-act="exp"><i>📁</i>Explorer</button>
+      <button data-act="prop"><i>📋</i>Properties</button>
+      <button data-act="light" class="only-map"><i>☀</i>Lighting</button>
+    </div><div class="gl">View</div></div>
+
+    <div class="grp"><div class="gb">
+      <button data-act="save"><i>💾</i>Save</button>
+      <button data-act="play" class="play only-map"><i>▶</i>Play</button>
+      <button data-act="publish" class="pub only-map"><i>🚀</i>Publish</button>
+      <button data-act="submit" class="pub only-avatar"><i>📤</i>Submit</button>
+    </div><div class="gl">File</div></div>
+  </div>
+
+  <div id="stView">
+    <div id="stCanvas"></div>
+
+    <div id="stExp" class="panel">
+      <div class="ph">Explorer <button data-act="exp">✕</button></div>
+      <div id="stExpBody" class="pb"></div>
+    </div>
+
+    <div id="stProp" class="panel right">
+      <div class="ph">Properties <button data-act="prop">✕</button></div>
+      <div id="stPropBody" class="pb">
+        <div id="propEmpty" class="muted">Select an object (tap it in the viewport or in the Explorer)</div>
+        <div id="propForm" class="pf hidden">
+          <div id="pMulti" class="muted"></div>
+          <label>Name</label>
+          <input type="text" id="pn" maxlength="30">
+          <div id="pPart">
+            <label>Position (X, Y, Z)</label>
+            <div class="r3">
+              <input type="number" id="px" step="0.25"><input type="number" id="py" step="0.25"><input type="number" id="pz" step="0.25">
+            </div>
+            <label>Size (X, Y, Z)</label>
+            <div class="r3">
+              <input type="number" id="pw" step="0.25" min="0.2"><input type="number" id="ph" step="0.25" min="0.2"><input type="number" id="pd" step="0.25" min="0.2">
+            </div>
+            <label>Nudge: each tap = the Snap number</label>
+            <div class="nud">
+              <button data-n="x,-1">X−</button><button data-n="x,1">X+</button>
+              <button data-n="y,-1">Y−</button><button data-n="y,1">Y+</button>
+              <button data-n="z,-1">Z−</button><button data-n="z,1">Z+</button>
+              <button data-n="w,-1">W−</button><button data-n="w,1">W+</button>
+              <button data-n="h,-1">H−</button><button data-n="h,1">H+</button>
+              <button data-n="d,-1">D−</button><button data-n="d,1">D+</button>
+            </div>
+            <label>Color</label>
+            <input type="color" id="pc" value="#a3a2a5">
+            <label class="only-avatar">Attach to (moves with this body part)</label>
+            <select id="pa" class="only-avatar">
+              <option value="">Body (static)</option><option value="head">Head</option><option value="torso">Torso</option>
+              <option value="la">Left Arm</option><option value="ra">Right Arm</option>
+              <option value="ll">Left Leg</option><option value="rl">Right Leg</option>
+            </select>
+            <label class="chk only-map"><input type="checkbox" id="pAn" checked> Anchored</label>
+            <label class="chk only-map"><input type="checkbox" id="pCo" checked> CanCollide</label>
+            <label class="chk only-map"><input type="checkbox" id="ps"> SpawnLocation</label>
+            <div class="muted only-map" style="margin-top:10px">Special names: <b>Water</b>, <b>Lava</b>, <b>Ladder</b>, <b>Sitting place</b>, <b>Jump pad</b> (or <b>Jump pad-3</b> = 3x jump). A Model/Folder with one of these names turns every part inside into that type. A Model named <b>Item-Name</b> is a tool (put it in StarterPack).</div>
+          </div>
+          <div id="pGui" class="hidden">
+            <label>Text</label><input id="pgt" maxlength="40">
+            <label>Position % (X, Y)</label>
+            <div class="r3"><input type="number" id="pgx" min="0" max="100"><input type="number" id="pgy" min="0" max="100"><span></span></div>
+            <label>Size px (W, H)</label>
+            <div class="r3"><input type="number" id="pgw" min="10" max="800"><input type="number" id="pgh" min="10" max="600"><span></span></div>
+            <label>Background color</label><input type="color" id="pgc" value="#d94545">
+            <label>Text color</label><input type="color" id="pgk" value="#ffffff">
+          </div>
+          <div id="pCode" class="hidden">
+            <button id="pEdit">📝 Edit script</button>
+            <label class="chk"><input type="checkbox" id="pOn" checked> Enabled</label>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="stStatus"></div>
+</div>
+
+<!-- Generic modal -->
+<div id="modal" class="hidden">
+  <div class="card dlg">
+    <h3 id="mTitle"></h3>
+    <div id="mBody"></div>
+    <div id="mBtns"></div>
+  </div>
+</div>
+
+<div id="toast" class="hidden"></div>
+
+<div id="ld" style="position:fixed;inset:0;z-index:99998;background:#191a1c;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:Arial,sans-serif;text-align:center;padding:20px">
+  <div style="font-size:56px;color:#0d99ff">✷</div>
+  <div id="ldT" style="margin-top:10px">Loading...</div>
+  <button id="ldB" style="display:none;margin-top:14px;background:#02b757;color:#fff;border:0;padding:10px 18px;border-radius:8px;font-weight:bold" onclick="location.reload()">Reload</button>
+</div>
+
+<script src="debug.js"></script>
+<script>
+/* Loader: loads every script in order and retries when the local server drops a file.
+   Files marked optional (PeerJS) never block the app. */
+(function () {
+  var FILES = [
+    ['https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js', 0],
+    ['https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js', 1],
+    ['data.js'], ['ui.js'], ['tree.js'], ['render.js'], ['avatar.js'], ['wear.js'], ['gscript.js'],
+    ['net.js'], ['game.js'], ['gx.js'], ['studio.js'], ['stui.js'], ['app.js'], ['play.js'], ['boot.js']
+  ];
+  var MAX = 8, T = document.getElementById('ldT'), B = document.getElementById('ldB');
+
+  function done() { var l = document.getElementById('ld'); if (l) l.remove(); }
+  function fatal(name) {
+    T.innerHTML = 'Could not load <b>' + name + '</b>.<br>Check that the file exists in the project folder and the internet works, then reload.';
+    B.style.display = 'block';
+  }
+
+  function load(i) {
+    if (i >= FILES.length) return done();
+    var u = FILES[i][0], opt = FILES[i][1], isLocal = !/^https?:/.test(u), n = 0;
+    T.textContent = 'Loading ' + (i + 1) + '/' + FILES.length + '  ' + u.split('/').pop();
+    (function attempt() {
+      var s = document.createElement('script');
+      s.dataset.rt = '1';
+      s.src = isLocal && n ? u + '?r=' + n + '_' + Date.now() : u;
+      s.onload = function () { load(i + 1); };
+      s.onerror = function () {
+        s.remove();
+        if (++n < MAX) setTimeout(attempt, 250 * n);
+        else if (opt) { if (window.dbgShow) window.dbgShow('Optional file not loaded: ' + u + ' (the game runs without it)'); load(i + 1); }
+        else fatal(u.split('/').pop());
+      };
+      document.body.appendChild(s);
+    })();
+  }
+  load(0);
+})();
+</script>
+</body>
+</html>
