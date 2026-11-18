@@ -1,7 +1,7 @@
 /* =====================================================
    BLOSOR STUDIO ENGINE (modes: 'map' and 'avatar')
    Works on a node tree (see tree.js). Selection = list of ids.
-   Free camera: unlimited distance, no fog. Shift = fast fly.
+   Tools: select / move / scale (local axes) / rotate (rings).
    ===================================================== */
 const Studio = {
   inited: false, active: false, mode: 'map', nodes: [], sel: [], multi: false, tool: 'select', snap: 1,
@@ -41,15 +41,16 @@ const Studio = {
     addEventListener('keyup', e => this.key(e, false));
   },
 
-  applyEnv() { Env.apply(this.s, this.sun, this.env); this.s.fog = null; }, // no fog in the editor
+  applyEnv() { Env.apply(this.s, this.sun, this.env); this.s.fog = null; },
 
   maxParts() { return this.mode === 'avatar' ? CONFIG.MAX_ACC_PARTS : CONFIG.MAX_PARTS; },
   count() { return this.nodes.filter(n => n.type === 'part').length; },
   node(id) { return this.nodes.find(n => n.id === id) || null; },
   prim() { return this.node(this.sel[this.sel.length - 1]); },
   single() { const n = this.sel.length === 1 ? this.prim() : null; return n && n.type === 'part' ? n : null; },
-  isScriptType(t) { return t === 'script' || t === 'localscript'; },
+  isScriptType(t) { return t === 'script' || t === 'localscript' || t === 'module'; },
   setEnv(e) { this.env = Env.clean(e); this.applyEnv(); this.markDirty(); },
+  rootPar(root) { return root === 'SS' ? 'SS' : root === 'SG' ? 'SG' : root === 'ST' ? 'ST' : null; },
 
   limit(p) {
     if (this.mode !== 'avatar') return p;
@@ -58,7 +59,7 @@ const Studio = {
     return p;
   },
 
-  /* ---------- gizmo ---------- */
+  /* ---------- gizmo: move arrows, scale cubes, rotate rings ---------- */
   buildGizmo() {
     const gz = this.gz = new THREE.Group(); gz.visible = false; this.s.add(gz);
     this.handles = [];
@@ -83,6 +84,16 @@ const Studio = {
         gz.add(h); this.handles.push(h);
       });
     }
+    for (let ax = 0; ax < 3; ax++) { // rotation rings
+      const dir = new THREE.Vector3(); dir.setComponent(ax, 1);
+      const mat = new THREE.MeshBasicMaterial({ color: cols[ax], depthTest: false, transparent: true });
+      const ring = new THREE.Group();
+      ring.add(new THREE.Mesh(new THREE.TorusGeometry(1, 0.025, 8, 64), mat), new THREE.Mesh(new THREE.TorusGeometry(1, 0.1, 6, 32), hitM));
+      if (ax === 0) ring.rotation.y = Math.PI / 2; else if (ax === 1) ring.rotation.x = Math.PI / 2;
+      ring.userData = { kind: 'rotate', ax, sg: 1, dir };
+      ring.traverse(o => { o.userData = ring.userData; o.renderOrder = 999; });
+      gz.add(ring); this.handles.push(ring);
+    }
   },
   gizmoOn() { return !!this.bb && this.tool !== 'select' && !(this.tool === 'scale' && !this.single()); },
   updateGizmo() {
@@ -91,11 +102,17 @@ const Studio = {
     const b = this.bb, c = new THREE.Vector3((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, (b.z0 + b.z1) / 2);
     const fac = Math.max(0.3, this.cam.position.distanceTo(c) * 0.07);
     const half = [(b.x1 - b.x0) / 2, (b.y1 - b.y0) / 2, (b.z1 - b.z0) / 2];
+    const sp = this.single(), sq = sp ? partQ(sp) : null, halfL = sp ? [sp.w / 2, sp.h / 2, sp.d / 2] : half;
+    const R = Math.max(half[0], half[1], half[2]) * 1.15 + 0.8;
     for (const h of this.handles) {
       const u = h.userData;
       h.visible = u.kind === this.tool;
       if (!h.visible) continue;
-      h.position.copy(c).addScaledVector(u.dir, half[u.ax] + (u.kind === 'scale' ? fac * 0.9 : 0));
+      if (u.kind === 'rotate') { h.position.copy(c); h.scale.setScalar(R); continue; }
+      if (u.kind === 'scale') {
+        const dir = sq ? u.dir.clone().applyQuaternion(sq) : u.dir;
+        h.position.copy(c).addScaledVector(dir, halfL[u.ax] + fac * 0.9);
+      } else h.position.copy(c).addScaledVector(u.dir, half[u.ax]);
       h.scale.setScalar(fac);
     }
   },
@@ -116,7 +133,7 @@ const Studio = {
   },
   rebuildAll() {
     const flat = this.mode === 'avatar', m = Tree.map(this.nodes);
-    this.grp.children.slice().forEach(c => { c.geometry.dispose(); this.grp.remove(c); });
+    this.grp.children.slice().forEach(c => { c.geometry.dispose(); freeMat(c); this.grp.remove(c); });
     this.meshes.clear();
     this.nodes.forEach(n => {
       if (n.type !== 'part' || Tree.root(m, n) !== 'WS') return;
@@ -128,10 +145,7 @@ const Studio = {
   refreshMesh(n) {
     const me = this.meshes.get(n.id); if (!me) return;
     const flat = this.mode === 'avatar', k = flat ? '' : (Tree.info(Tree.map(this.nodes), n).kind || '');
-    me.geometry.dispose(); me.geometry = partGeo(n, k);
-    me.material = flat ? Mats.flat(n.color) : Mats.forPart(n, k);
-    me.castShadow = k !== 'water' && k !== 'ladder'; me.receiveShadow = k !== 'water';
-    me.position.set(n.x, n.y, n.z);
+    applyPart(me, n, flat, k);
   },
   updateSelVis() {
     const b = this.bb = this.sel.length ? Tree.bbox(this.nodes, this.sel) : null;
@@ -179,7 +193,7 @@ const Studio = {
     const hit = this.rc.intersectObjects([...this.meshes.values()], false)[0];
     if (!hit) return this.tap(null);
     const m = Tree.map(this.nodes), n = m[hit.object.userData.id];
-    this.tap(n ? Tree.topModel(m, n).id : null); // a part inside a Model selects the whole Model
+    this.tap(n ? Tree.topModel(m, n).id : null);
   },
   setTool(t) { this.tool = t; },
 
@@ -189,10 +203,9 @@ const Studio = {
     let par = null;
     if (p) par = (p.type === 'model' || p.type === 'folder') ? p.id : p.parent;
     const r = par == null ? 'WS' : (SPECIAL.includes(par) ? par : Tree.root(m, m[par]));
-    if (r !== root) par = root === 'SS' ? 'SS' : root === 'SG' ? 'SG' : null;
+    if (r !== root) par = this.rootPar(root);
     return par;
   },
-  // scripts go inside the selected Item / ServerScript folder / GUI element, otherwise ServerScript
   scriptHome() {
     const m = Tree.map(this.nodes), p = this.prim();
     if (p) {
@@ -204,8 +217,8 @@ const Studio = {
   addNode(o, root) {
     const type = o.type || 'part';
     if (type === 'part' && this.count() >= this.maxParts()) return uiAlert('Part limit reached (' + this.maxParts() + ').');
-    if (this.nodes.length >= 3000) return uiAlert('Too many objects.');
-    if (this.isScriptType(type) && this.nodes.filter(n => this.isScriptType(n.type)).length >= 40) return uiAlert('Script limit reached (40).');
+    if (this.nodes.length >= 20000) return uiAlert('Too many objects.');
+    if (this.isScriptType(type) && this.nodes.filter(n => this.isScriptType(n.type)).length >= 5000) return uiAlert('Script limit reached (5000).');
     this.push();
     const n = Object.assign({ id: Tree.nid(), type: 'part', parent: this.home(root) }, o);
     this.nodes.push(n); this.sel = [n.id];
@@ -221,9 +234,10 @@ const Studio = {
   },
   addContainer(type) { return this.addNode({ type, name: type === 'model' ? 'Model' : 'Folder', open: true }, 'WS'); },
   addScript(type, code) {
-    return this.addNode({ type, name: type === 'script' ? 'Script' : 'LocalScript', code: code || '', open: true, parent: this.scriptHome() }, 'SS');
+    const nm = type === 'script' ? 'Script' : type === 'module' ? 'ModuleScript' : 'LocalScript';
+    return this.addNode({ type, name: nm, code: code || '', open: true, parent: this.scriptHome() }, 'SS');
   },
-  // StarterGui: ScreenGui (container) with Buttons / Labels inside
+  addRemote(fn) { return this.addNode({ type: fn ? 'rfunc' : 'remote', name: fn ? 'GetData' : 'Remote', parent: 'ST' }, 'ST'); },
   addGui(kind) {
     if (this.nodes.filter(n => GUI_T.includes(n.type)).length >= 60) return uiAlert('GUI limit reached (60).');
     if (kind === 'gui') return this.addNode({ type: 'gui', name: 'ScreenGui', parent: 'SG', open: true }, 'SG');
@@ -275,13 +289,13 @@ const Studio = {
     const top = this.nodes.filter(n => sel.includes(n.id) && !all.has(n.parent));
     const m = Tree.map(this.nodes), r0 = Tree.root(m, top[0]);
     if (top.some(n => Tree.root(m, n) !== r0)) return uiAlert('Items from different services cannot be grouped together.');
-    if (r0 === 'SG') return uiAlert('Use ScreenGui to group GUI elements.');
+    if (r0 === 'SG' || r0 === 'ST') return uiAlert('Cannot group items here.');
     this.push();
     const c = { id: Tree.nid(), type: r0 === 'SS' ? 'folder' : type, name: type === 'model' && r0 !== 'SS' ? 'Model' : 'Folder', parent: top[0].parent, open: true };
     this.nodes.push(c); top.forEach(n => { n.parent = c.id; });
     this.sel = [c.id]; this.rebuildAll(); this.changed(true);
   },
-  ungroup() { // everything inside the selected object moves up one level
+  ungroup() {
     const cs = this.sel.map(id => this.node(id)).filter(n => n && this.nodes.some(k => k.parent === n.id));
     if (!cs.length) return uiAlert('Select an object that has things inside it.');
     this.push(); const out = [];
@@ -289,24 +303,24 @@ const Studio = {
     this.nodes = this.nodes.filter(n => !(['model', 'folder'].includes(n.type) && cs.includes(n)));
     this.sel = out; this.rebuildAll(); this.changed(true);
   },
-  // Into: put the selected items inside the item that was selected LAST (a Part can hold Parts)
   into() {
     if (this.sel.length < 2) return uiAlert('Turn on Multi, select the items to move, then select the TARGET last.');
     const tid = this.sel[this.sel.length - 1], t = this.node(tid);
     const moving = this.sel.slice(0, -1).map(id => this.node(id)).filter(Boolean);
     if (!t || !moving.length) return;
     if (Tree.sub(this.nodes, moving.map(n => n.id)).has(tid)) return uiAlert('Cannot move something into itself.');
-    if (this.isScriptType(t.type)) return uiAlert('A script cannot hold other objects.');
+    if (this.isScriptType(t.type) || t.type === 'remote' || t.type === 'rfunc') return uiAlert('That target cannot hold other objects.');
     const m = Tree.map(this.nodes), tr = Tree.root(m, t);
     for (const n of moving) {
       const isG = GUI_T.includes(n.type);
+      if (n.type === 'remote' || n.type === 'rfunc') return uiAlert('Remote objects stay in StoreServer.');
       if (isG && !(tr === 'SG' && GUI_T.includes(t.type))) return uiAlert('GUI elements can only go inside a ScreenGui.');
-      if (!isG && !this.isScriptType(n.type) && (tr === 'SG' || tr === 'SS')) return uiAlert('That target cannot hold ' + n.name + '.');
+      if (!isG && !this.isScriptType(n.type) && (tr === 'SG' || tr === 'SS' || tr === 'ST')) return uiAlert('That target cannot hold ' + n.name + '.');
     }
     this.push(); moving.forEach(n => { n.parent = tid; }); this.sel = moving.map(n => n.id);
     this.rebuildAll(); this.changed(true); toast('Moved inside ' + t.name);
   },
-  out() { // Out: one level up
+  out() {
     const ns = this.sel.map(id => this.node(id)).filter(n => n && n.parent && !SPECIAL.includes(n.parent));
     if (!ns.length) return uiAlert('Select something that is inside another object.');
     this.push();
@@ -329,32 +343,35 @@ const Studio = {
     return true;
   },
   cut() { if (this.copy()) { this.del(); toast('Cut. Use Paste to put it back.'); } },
-  // dup = exact copy in the SAME place (same parent, same position)
+  // dup = exact copy in the SAME place
   paste(dup) {
     const cl = this.clip;
     if (!cl) return toast('Nothing to paste');
     const c = Tree.clone(cl.list, cl.roots);
     const roots = c.list.filter(n => c.roots.includes(n.id));
-    const kind = c.list.every(n => this.isScriptType(n.type)) ? 'script' : c.list.some(n => GUI_T.includes(n.type)) ? 'gui' : 'ws';
+    const kind = c.list.every(n => this.isScriptType(n.type)) ? 'script'
+      : c.list.every(n => n.type === 'remote' || n.type === 'rfunc') ? 'st'
+      : c.list.some(n => GUI_T.includes(n.type)) ? 'gui' : 'ws';
     const newParts = c.list.filter(n => n.type === 'part').length;
     if (this.count() + newParts > this.maxParts()) return uiAlert('Part limit reached (' + this.maxParts() + ').');
-    if (this.nodes.length + c.list.length > 3000) return uiAlert('Too many objects.');
-    const m = Tree.map(this.nodes);
+    if (this.nodes.length + c.list.length > 20000) return uiAlert('Too many objects.');
+    const m = Tree.map(this.nodes), dflt = kind === 'script' ? 'SS' : kind === 'gui' ? 'SG' : kind === 'st' ? 'ST' : null;
     if (!dup && this.sel.length) { // paste INTO the selected object (Part -> Part works)
       let t = this.prim();
-      if (t && this.isScriptType(t.type)) t = t.parent && !SPECIAL.includes(t.parent) ? m[t.parent] : null;
+      if (t && (this.isScriptType(t.type) || t.type === 'remote' || t.type === 'rfunc')) t = t.parent && !SPECIAL.includes(t.parent) ? m[t.parent] : null;
       let par;
       if (t) {
         const tr = Tree.root(m, t);
         if (kind === 'script') par = t.id;
+        else if (kind === 'st') par = 'ST';
         else if (kind === 'gui') par = tr === 'SG' && GUI_T.includes(t.type) ? t.id : 'SG';
         else par = (tr === 'WS' || tr === 'SP') ? t.id : null;
-      } else par = kind === 'script' ? 'SS' : kind === 'gui' ? 'SG' : null;
+      } else par = dflt;
       roots.forEach(n => { n.parent = par; });
-    } else if (!dup) { // nothing selected: back to the original place when it still exists
+    } else if (!dup) {
       roots.forEach(n => {
         const op = n.parent, ok = SPECIAL.includes(op) || (op && m[op]);
-        n.parent = ok ? op : (kind === 'script' ? 'SS' : kind === 'gui' ? 'SG' : null);
+        n.parent = ok ? op : dflt;
       });
     }
     if (this.nodes.some(n => n.spawn)) c.list.forEach(n => { n.spawn = false; });
@@ -372,20 +389,41 @@ const Studio = {
   },
 
   /* ---------- rotate / flip ---------- */
-  xform(fn) {
-    if (!this.sel.length) return toast('Select something first');
-    const ids = Tree.sub(this.nodes, this.sel), b = Tree.bbox(this.nodes, this.sel);
-    if (!b) return toast('Nothing to transform');
-    const cx = (b.x0 + b.x1) / 2, cz = (b.z0 + b.z1) / 2;
+  selItems() {
+    const ids = Tree.sub(this.nodes, this.sel);
+    return this.nodes.filter(n => n.type === 'part' && ids.has(n.id)).map(n => ({ n, x: n.x, y: n.y, z: n.z, q: partQ(n) }));
+  },
+  center() {
+    const b = this.bb; if (!b) return null;
+    return new THREE.Vector3((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, (b.z0 + b.z1) / 2);
+  },
+  // rotate items around the world axis `ax` (0,1,2) through c
+  applyRot(items, c, ax, ang) {
+    const axis = new THREE.Vector3(); axis.setComponent(ax, 1);
+    const dq = new THREE.Quaternion().setFromAxisAngle(axis, ang);
+    items.forEach(s => {
+      const v = new THREE.Vector3(s.x, s.y, s.z).sub(c).applyQuaternion(dq).add(c);
+      s.n.x = +v.x.toFixed(3); s.n.y = +v.y.toFixed(3); s.n.z = +v.z.toFixed(3);
+      setRot(s.n, dq.clone().multiply(s.q));
+      this.limit(s.n);
+      const me = this.meshes.get(s.n.id);
+      if (me) { me.position.set(s.n.x, s.n.y, s.n.z); me.rotation.set((s.n.rx || 0) * D2, (s.n.ry || 0) * D2, (s.n.rz || 0) * D2); }
+    });
+  },
+  rotate() { // turn the selection 90 degrees around Y
+    const c = this.center(); if (!c) return toast('Select something first');
+    this.push(); this.applyRot(this.selItems(), c, 1, Math.PI / 2); this.changed(true);
+  },
+  flip(axis) { // mirror the selection (positions and rotations)
+    const c = this.center(); if (!c) return toast('Select something first');
     this.push();
-    this.nodes.forEach(n => { if (n.type === 'part' && ids.has(n.id)) { fn(n, cx, cz); this.limit(n); this.refreshMesh(n); } });
+    this.selItems().forEach(s => {
+      const n = s.n, q = s.q;
+      if (axis === 'x') { n.x = +(2 * c.x - n.x).toFixed(3); q.set(q.x, -q.y, -q.z, q.w); }
+      else { n.z = +(2 * c.z - n.z).toFixed(3); q.set(-q.x, -q.y, q.z, q.w); }
+      setRot(n, q); this.limit(n); this.refreshMesh(n);
+    });
     this.changed(true);
-  },
-  rotate() { // 90 degrees around Y, around the middle of the selection
-    this.xform((n, cx, cz) => { const dx = n.x - cx, dz = n.z - cz; n.x = +(cx + dz).toFixed(3); n.z = +(cz - dx).toFixed(3); const w = n.w; n.w = n.d; n.d = w; });
-  },
-  flip(axis) { // mirror across the middle of the selection
-    this.xform((n, cx, cz) => { if (axis === 'x') n.x = +(2 * cx - n.x).toFixed(3); else n.z = +(2 * cz - n.z).toFixed(3); });
   },
 
   focus() {
@@ -405,9 +443,13 @@ const Studio = {
     this.changed(list);
   },
 
+  // move / resize / rotate by exactly the Snap number
   nudge(k, dir) {
     const a = (this.snap > 0 ? this.snap : 1) * dir;
-    if ('xyz'.includes(k)) {
+    if (k === 'rx' || k === 'ry' || k === 'rz') {
+      const p = this.single(); if (!p) return toast('Select one part to rotate');
+      this.push(); p[k] = +(((p[k] || 0) + a) % 360).toFixed(2); this.refreshMesh(p);
+    } else if ('xyz'.includes(k)) {
       if (!this.sel.length) return toast('Select something first');
       this.push();
       const ids = Tree.sub(this.nodes, this.sel);
@@ -497,29 +539,54 @@ const Studio = {
     const hits = this.rc.intersectObjects(this.handles.filter(h => h.userData.kind === this.tool), true);
     return hits.length ? hits[0].object.userData : null;
   },
-  axisT(e, ax, o) {
+  // closest point of the screen ray to the line (o, dir): parameter along dir
+  axisT(e, dir, o) {
     this.rc.setFromCamera(this.ndc(e), this.cam);
-    const ray = this.rc.ray, a = new THREE.Vector3(); a.setComponent(ax, 1);
-    const w0 = new THREE.Vector3(o.x, o.y, o.z).sub(ray.origin);
-    const b = a.dot(ray.direction), d = a.dot(w0), ee = ray.direction.dot(w0), den = 1 - b * b;
+    const ray = this.rc.ray;
+    const w0 = new THREE.Vector3().copy(o).sub(ray.origin);
+    const b = dir.dot(ray.direction), d = dir.dot(w0), ee = ray.direction.dot(w0), den = 1 - b * b;
     if (den < 1e-4) return null;
     return (b * ee - d) / den;
   },
+  // angle of the pointer around the axis ring through c
+  ringAng(e, ax, c) {
+    this.rc.setFromCamera(this.ndc(e), this.cam);
+    const r = this.rc.ray, n = new THREE.Vector3(); n.setComponent(ax, 1);
+    const den = r.direction.dot(n); if (Math.abs(den) < 1e-3) return null;
+    const t = c.clone().sub(r.origin).dot(n) / den;
+    const hit = r.origin.clone().addScaledVector(r.direction, t).sub(c), a = [hit.x, hit.y, hit.z];
+    return Math.atan2(a[(ax + 2) % 3], a[(ax + 1) % 3]);
+  },
   sn(v) { return this.snap > 0 ? +(Math.round(v / this.snap) * this.snap).toFixed(3) : +v.toFixed(2); },
   startDrag(u, e) {
-    const b = this.bb; if (!b) return false;
-    const c = { x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2, z: (b.z0 + b.z1) / 2 };
-    const t0 = this.axisT(e, u.ax, c); if (t0 === null) return false;
+    const c = this.center(); if (!c) return false;
+    if (u.kind === 'rotate') {
+      const a0 = this.ringAng(e, u.ax, c); if (a0 === null) return false;
+      const items = this.selItems(); if (!items.length) return false;
+      this.push(); this.drag = { u, a0, c, items, rot: true };
+      return true;
+    }
+    let dir;
+    if (u.kind === 'scale') { const sp = this.single(); if (!sp) return false; dir = u.dir.clone().applyQuaternion(partQ(sp)); }
+    else { dir = new THREE.Vector3(); dir.setComponent(u.ax, 1); }
+    const t0 = this.axisT(e, dir, c); if (t0 === null) return false;
     const ids = u.kind === 'move' ? Tree.sub(this.nodes, this.sel) : new Set(this.single() ? [this.single().id] : []);
     const items = this.nodes.filter(n => n.type === 'part' && ids.has(n.id)).map(n => ({ n, x: n.x, y: n.y, z: n.z, w: n.w, h: n.h, d: n.d }));
     if (!items.length) return false;
-    this.push();
-    this.drag = { u, t0, c, items };
+    this.push(); this.drag = { u, t0, c, dir, items };
     return true;
   },
   dragTo(e) {
     const d = this.drag; if (!d) return;
-    const u = d.u, t = this.axisT(e, u.ax, d.c); if (t === null) return;
+    const u = d.u;
+    if (d.rot) {
+      const a = this.ringAng(e, u.ax, d.c); if (a === null) return;
+      let da = Math.atan2(Math.sin(a - d.a0), Math.cos(a - d.a0));
+      if (this.snap > 0) { const st = 15 * D2; da = Math.round(da / st) * st; }
+      this.applyRot(d.items, d.c, u.ax, da);
+      this.changed(false); return;
+    }
+    const t = this.axisT(e, d.dir, d.c); if (t === null) return;
     const delta = t - d.t0, k = ['x', 'y', 'z'][u.ax], dm = ['w', 'h', 'd'][u.ax];
     if (u.kind === 'move') {
       const dd = this.sn(d.c[k] + delta) - d.c[k];
@@ -529,8 +596,10 @@ const Studio = {
       });
     } else {
       const s = d.items[0], p = s.n;
-      const ns = Math.max(this.snap > 0 ? this.snap : 0.2, this.sn(s[dm] + u.sg * delta));
-      p[dm] = ns; p[k] = +(s[k] + u.sg * (ns - s[dm]) / 2).toFixed(3);
+      const ns = Math.max(this.snap > 0 ? this.snap : 0.2, this.sn(s[dm] + delta));
+      p[dm] = ns;
+      const sh = d.dir.clone().multiplyScalar((ns - s[dm]) / 2);
+      p.x = +(s.x + sh.x).toFixed(3); p.y = +(s.y + sh.y).toFixed(3); p.z = +(s.z + sh.z).toFixed(3);
       this.limit(p); this.refreshMesh(p);
     }
     this.changed(false);
