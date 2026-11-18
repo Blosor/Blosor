@@ -1,21 +1,16 @@
 /* =====================================================
-   NET: peer-to-peer multiplayer (WebRTC through PeerJS)
-   + LOBBY: a peer-to-peer game directory.
+   NET: peer-to-peer multiplayer (WebRTC through PeerJS) + LOBBY.
 
-   Game servers: the first device that opens a game becomes the HOST.
+   Game servers: the first device that opens a game is the HOST.
    Slots are named  blosor-<gameCode>-s1, s2 ...  (full -> next slot).
+   Net.probe() asks every slot how many players it has (server list).
 
-   Lobby: the first device claims the peer id "blosor-lobby-1" and acts as
-   the directory. Other devices connect to it, upload the games they
-   published (metadata + map) and download the list of online games.
-   If the directory device leaves, the next device claims the id.
+   Lobby: the first device claims "blosor-lobby-1" and acts as the directory
+   for published games, friend requests, friend presence and the owner's
+   signed moderation list. If it leaves, the next device claims the id.
    ===================================================== */
-
-/* Network settings. For a real website:
-   - peer: your own PeerServer  { host:'peer.example.com', port:443, path:'/', secure:true }
-   - ice : add a TURN server so players behind strict networks can still connect */
 const NetCfg = {
-  peer: {},
+  peer: {},   // your own PeerServer: { host:'peer.example.com', port:443, path:'/', secure:true }
   ice: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
@@ -32,17 +27,16 @@ const Net = {
   live: false, isHost: true, solo: false, peer: null, cp: null, hc: null, clients: {}, n: 0,
   o: null, slot: 0, fails: 0, q: [], hold: true, myId: 'h', MAXSLOTS: 15, joined: false, rx: 0, wt: null,
 
-  // o = { gid, max, name, av, map|null, snapshot(), watch(), onMsg, onJoin, onLeft, onClosed, onKick, done(err, info) }
+  // o = { gid, slot?, max, name, av, map|null, snapshot(), watch(), onMsg, onJoin, onLeft, onClosed, onKick, done(err, info) }
   enter(o) {
     this.leave();
-    this.o = o; this.live = true; this.isHost = true; this.solo = false; this.slot = 0; this.fails = 0;
+    this.o = o; this.live = true; this.isHost = true; this.solo = false; this.slot = o.slot > 0 ? o.slot - 1 : 0; this.fails = 0;
     this.q = []; this.hold = true; this.clients = {}; this.n = 0; this.myId = 'h'; this.joined = false; this.rx = Date.now();
     if (typeof Peer === 'undefined') return this.fallback('Multiplayer library not loaded (needs internet).');
     this.wt = setInterval(() => this.watch(), 2500);
     this.next();
   },
 
-  // no usable network: play alone if this device has the map
   fallback(msg) {
     const o = this.o;
     this.closeAll();
@@ -50,7 +44,6 @@ const Net = {
     else { this.live = false; if (o) o.done(msg); }
   },
 
-  // try to become the host of slot N
   next() {
     if (!this.live) return;
     const o = this.o;
@@ -64,7 +57,7 @@ const Net = {
       if (done) return;
       done = true;
       try { p.destroy(); } catch (_) {}
-      if (e && e.type === 'unavailable-id') this.client(pid);          // someone already hosts this slot
+      if (e && e.type === 'unavailable-id') this.client(pid);
       else this.fallback('Cannot reach the multiplayer service (' + (e && e.type || 'error') + ').');
     });
   },
@@ -74,17 +67,16 @@ const Net = {
     if (!o.map) { this.closeAll(); this.live = false; return o.done('No server is online for this game and its map could not be found.'); }
     this.isHost = true; this.myId = 'h';
     p.on('connection', c => this.hostConn(c));
-    p.on('disconnected', () => { try { p.reconnect(); } catch (_) {} }); // keep the host reachable
+    p.on('disconnected', () => { try { p.reconnect(); } catch (_) {} });
     o.done(null, { host: true, id: 'h', map: o.map, players: [] });
   },
 
-  // connect to the host of slot `pid` as a player
   client(pid) {
     const o = this.o;
     let settled = false, c = null, tm = null, p = this.cp;
     if (!p || p.destroyed) p = this.cp = NetCfg.mk();
     const cleanup = () => { settled = true; clearTimeout(tm); try { p.off('error', onErr); } catch (_) {} };
-    const retry = (count) => {              // slot is full or unreachable: look at the next slot
+    const retry = count => {
       cleanup();
       try { if (c) c.close(); } catch (_) {}
       if (count && ++this.fails >= 3) return this.fallback('Could not connect. Your network may block peer-to-peer (a TURN server is needed).');
@@ -92,7 +84,7 @@ const Net = {
     };
     const onErr = e => {
       if (settled) return;
-      if (e && e.type === 'peer-unavailable') { this.slot--; retry(true); }   // the host just left: try to claim the same slot
+      if (e && e.type === 'peer-unavailable') { this.slot--; retry(true); }
       else { cleanup(); this.fallback('Cannot reach the multiplayer service.'); }
     };
     p.on('error', onErr);
@@ -129,6 +121,11 @@ const Net = {
     c.on('data', m => {
       if (!m || typeof m !== 'object') return;
       if (!id) {
+        if (m.t === 'probe') { // server list: tell how many players are here, do not join
+          try { c.send({ t: 'info', n: this.count(), max: o.max }); } catch (_) {}
+          setTimeout(() => { try { c.close(); } catch (_) {} }, 400);
+          return;
+        }
         if (m.t !== 'join') return;
         clearTimeout(hello);
         if (Object.keys(this.clients).length + 1 >= o.max) {
@@ -161,7 +158,6 @@ const Net = {
     if (this.o && this.o.onLeft) this.o.onLeft(id);
   },
 
-  // keep-alive: ping both ways, drop silent connections
   watch() {
     if (!this.live || this.solo) return;
     const now = Date.now();
@@ -170,14 +166,12 @@ const Net = {
     else if (this.joined && now - this.rx > 20000) { this.joined = false; if (this.o && this.o.onClosed) this.o.onClosed(); }
   },
 
-  // host removes a player (exploit / abuse)
   kick(id, reason) {
     const x = this.clients[id]; if (!x) return;
     try { x.c.send({ t: 'kick', reason: String(reason || '').slice(0, 80) }); } catch (_) {}
     setTimeout(() => this.removeClient(id), 500);
   },
 
-  // messages that arrive before the game is ready are queued
   deliver(m, from) { if (this.hold) this.q.push([m, from]); else if (this.o && this.o.onMsg) this.o.onMsg(m, from); },
   release() { this.hold = false; const q = this.q; this.q = []; q.forEach(x => this.deliver(x[0], x[1])); },
 
@@ -192,7 +186,6 @@ const Net = {
   relay(m, except) { Object.keys(this.clients).forEach(i => { if (i !== except) this.sendTo(i, m); }); },
   count() { return Object.keys(this.clients).length + 1; },
 
-  // avatar data from another device is always sanitized
   cleanAv(a) {
     a = a || {};
     const col = {};
@@ -204,6 +197,24 @@ const Net = {
     };
   },
 
+  // server list: how many players are in each slot of a game. cb([{slot, n, max, empty}])
+  probe(gid, cb) {
+    if (typeof Peer === 'undefined') return cb([]);
+    let p; try { p = NetCfg.mk(); } catch (e) { return cb([]); }
+    const res = [], N = 6; let done = false;
+    const fin = () => { if (done) return; done = true; clearTimeout(kill); try { p.destroy(); } catch (_) {} cb(res.sort((a, b) => a.slot - b.slot)); };
+    const kill = setTimeout(fin, 7000);
+    const add = r => { if (!res.some(x => x.slot === r.slot)) res.push(r); if (res.length >= N) fin(); };
+    p.on('error', e => { const m = /-s(\d+)/.exec(String(e && e.message || '')); if (m) add({ slot: +m[1], n: 0, max: 0, empty: true }); });
+    p.on('open', () => {
+      for (let s = 1; s <= N; s++) {
+        const c = p.connect('blosor-' + gid + '-s' + s, { reliable: true });
+        c.on('open', () => c.send({ t: 'probe' }));
+        c.on('data', m => { if (m && m.t === 'info') { add({ slot: s, n: num(m.n, 0, 100, 0), max: num(m.max, 1, 100, 8), empty: false }); try { c.close(); } catch (_) {} } });
+      }
+    });
+  },
+
   closeAll() {
     Object.values(this.clients).forEach(x => { try { x.c.close(); } catch (_) {} });
     this.clients = {};
@@ -213,16 +224,21 @@ const Net = {
     try { if (this.cp) this.cp.destroy(); } catch (_) {}
     this.peer = null; this.cp = null;
   },
-  leave() { this.live = false; this.solo = false; this.joined = false; clearInterval(this.wt); this.wt = null; this.closeAll(); this.q = []; this.hold = true; }
+  leave() {
+    this.live = false; this.solo = false; this.joined = false; clearInterval(this.wt); this.wt = null;
+    this.closeAll(); this.q = []; this.hold = true;
+    if (typeof Lobby !== 'undefined') { Lobby.pres = null; Lobby.last = 0; }
+  }
 };
 addEventListener('beforeunload', () => Net.leave());
 
 /* =====================================================
-   LOBBY: peer-to-peer directory of published games
+   LOBBY: peer-to-peer directory (games, friends, moderation)
    ===================================================== */
 const Lobby = {
   DIR: 'blosor-lobby-1', role: null, dp: null, cp: null, ent: {}, list: [], busy: false, last: 0, sig: '',
   status: 'Searching...', started: false, MAXMAP: 600000,
+  pres: null, fpres: {}, prs: {}, ibx: {}, mod: null, modv: 0,
 
   /* ----- what this device offers ----- */
   mine() {
@@ -247,13 +263,42 @@ const Lobby = {
   },
   cleanList(a) { return (Array.isArray(a) ? a : []).slice(0, 100).map(g => this.clean(g)).filter(Boolean); },
 
-  /* ----- directory (this device is the lobby) ----- */
+  /* ----- directory side ----- */
   prune() { const t = Date.now(); Object.keys(this.ent).forEach(id => { const e = this.ent[id]; if (!e.own && t - e.seen > 150000) delete this.ent[id]; }); },
-  metas() { this.prune(); return Object.values(this.ent).filter(e => e.map).map(e => e.meta); },
+  metas() { this.prune(); return Object.values(this.ent).filter(e => e.map && !Mod.blocked(e.meta.id)).map(e => e.meta); },
   regOwn() {
     const mine = this.mine(), ids = new Set(mine.map(m => m.id));
     mine.forEach(m => { const d = this.mapOf(m.id); if (d) this.ent[m.id] = { meta: m, map: d, seen: Date.now(), own: 1 }; });
     Object.keys(this.ent).forEach(id => { if (this.ent[id].own && !ids.has(id)) delete this.ent[id]; });
+  },
+  takeMod(p) {
+    Mod.verify(p).then(ok => {
+      if (!ok) return;
+      try { const v = JSON.parse(p.s).v; if (v > this.modv) { this.mod = p; this.modv = v; } Mod.consume(p); } catch (_) {}
+    });
+  },
+  // presence + friend requests. Returns what this player should receive.
+  social(me, friends, pres) {
+    me = String(me || '').toLowerCase().slice(0, 20);
+    if (!/^[a-z0-9_]{3,20}$/.test(me)) return { inbox: [], pres: {} };
+    const t = Date.now();
+    if (pres && typeof pres === 'object' && /^[a-z0-9]{4,24}$/.test(String(pres.gid))) {
+      this.prs[me] = { gid: String(pres.gid), slot: num(pres.slot, 1, 50, 1), gname: String(pres.gname || '').slice(0, 40), ts: t };
+    } else delete this.prs[me];
+    Object.keys(this.prs).forEach(k => { if (t - this.prs[k].ts > 150000) delete this.prs[k]; });
+    const inbox = this.ibx[me] || []; delete this.ibx[me];
+    const out = {};
+    (Array.isArray(friends) ? friends : []).slice(0, 100).forEach(f => {
+      f = String(f).toLowerCase(); const x = this.prs[f];
+      if (x) out[f] = { gid: x.gid, slot: x.slot, gname: x.gname };
+    });
+    return { inbox, pres: out };
+  },
+  fr(m) {
+    const to = String(m.to || '').toLowerCase(), from = String(m.from || '').toLowerCase();
+    if (!/^[a-z0-9_]{3,20}$/.test(to) || !/^[a-z0-9_]{3,20}$/.test(from)) return;
+    const l = this.ibx[to] = this.ibx[to] || [];
+    if (l.length < 50) l.push({ k: m.k === 'acc' ? 'acc' : 'req', from });
   },
   claim(cb) {
     let p, done = false;
@@ -278,15 +323,18 @@ const Lobby = {
       if (m.t === 'sync') {
         const need = [];
         (Array.isArray(m.games) ? m.games : []).slice(0, 20).forEach(g => {
-          const meta = this.clean(g); if (!meta) return;
+          const meta = this.clean(g); if (!meta || Mod.blocked(meta.id)) return;
           const e = this.ent[meta.id];
           if (e && e.own) return;
-          if (e && e.meta.owner !== meta.owner && Date.now() - e.seen < 150000) return;   // first owner keeps the id
+          if (e && e.meta.owner !== meta.owner && Date.now() - e.seen < 150000) return;
           if (e && e.map && e.meta.v === meta.v) { e.seen = Date.now(); return; }
           this.ent[meta.id] = { meta, map: null, seen: Date.now() };
           need.push(meta.id);
         });
-        send(need.length ? { t: 'need', ids: need } : { t: 'list', games: this.metas() });
+        if (m.mod) this.takeMod(m.mod);
+        const s = this.social(m.me, m.friends, m.pres);
+        send(need.length ? { t: 'need', ids: need, inbox: s.inbox, pres: s.pres, mod: this.mod }
+                         : { t: 'list', games: this.metas(), inbox: s.inbox, pres: s.pres, mod: this.mod });
       } else if (m.t === 'maps') {
         (Array.isArray(m.maps) ? m.maps : []).slice(0, 10).forEach(x => {
           const e = x && this.ent[String(x.id)];
@@ -294,15 +342,15 @@ const Lobby = {
           let ok = false; try { ok = JSON.stringify(x.data).length <= this.MAXMAP; } catch (_) {}
           if (ok) e.map = x.data;
         });
-        send({ t: 'list', games: this.metas() });
+        send({ t: 'list', games: this.metas(), mod: this.mod });
       } else if (m.t === 'get') {
         const e = this.ent[String(m.id)];
-        send({ t: 'map', id: String(m.id), data: e && e.map ? e.map : null });
-      }
+        send({ t: 'map', id: String(m.id), data: e && e.map && !Mod.blocked(String(m.id)) ? e.map : null });
+      } else if (m.t === 'fr') { this.fr(m); send({ t: 'ok' }); }
     });
   },
 
-  /* ----- talk to the directory from another device ----- */
+  /* ----- client side ----- */
   talk(first, handle, cb) {
     let done = false, c = null, tm = null;
     let p = this.cp;
@@ -323,35 +371,65 @@ const Lobby = {
     if (p.open) go(); else p.once('open', go);
   },
 
+  // process social + moderation data that came back from the directory
+  eat(m) {
+    if (m.mod) Mod.consume(m.mod);
+    if (Array.isArray(m.inbox) && typeof Social !== 'undefined') m.inbox.slice(0, 50).forEach(x => Social.inbox(x));
+    if (m.pres && typeof m.pres === 'object') this.fpres = m.pres;
+  },
+
+  send(m) { // friend request / acceptance
+    if (this.role === 'dir') return this.fr(m);
+    this.talk(m, r => { if (r.t === 'ok') this.cb && 0; }, res => { if (res === 'none') this.claim(ok => { if (ok) this.fr(m); }); });
+  },
+
   sync() {
     if (this.busy || typeof Peer === 'undefined' || !Auth.me()) return;
     this.busy = true; this.last = Date.now(); this.sig = this.sigOf();
+    const go = () => this.sync2();
+    (Auth.isAdmin() && Mod.ok() ? Mod.rebuild().catch(() => null) : Promise.resolve()).then(go, go);
+  },
+  sync2() {
+    const me = Auth.me();
     const end = st => { this.busy = false; this.status = st; this.draw(); };
-    if (this.role === 'dir') { this.regOwn(); this.list = this.metas(); return end('You are hosting the lobby'); }
-    this.talk({ t: 'sync', games: this.mine() }, (m, c, finish) => {
+    if (!me) { this.busy = false; return; }
+    Mod.deducts();
+    const friends = typeof Social !== 'undefined' ? Social.names() : [], mp = Mod.pack();
+    if (mp) this.takeMod(mp);
+    if (this.role === 'dir') {
+      this.regOwn(); this.list = this.metas();
+      const s = this.social(me.name, friends, this.pres);
+      this.eat({ inbox: s.inbox, pres: s.pres, mod: this.mod });
+      return end('You are hosting the lobby');
+    }
+    this.talk({ t: 'sync', games: this.mine(), me: me.name, friends, pres: this.pres, mod: mp }, (m, c, finish) => {
+      this.eat(m);
       if (m.t === 'need') {
         const maps = [];
         (m.ids || []).slice(0, 10).forEach(id => { const d = this.mapOf(String(id)); if (d) maps.push({ id: String(id), data: d }); });
         c.send({ t: 'maps', maps });
-      } else if (m.t === 'list') { this.list = this.cleanList(m.games); finish('ok'); }
+      } else if (m.t === 'list') { this.list = this.cleanList(m.games).filter(g => !Mod.blocked(g.id)); finish('ok'); }
     }, r => {
       if (r === 'ok') return end('Online');
-      this.claim(ok => end(ok ? 'You are hosting the lobby' : 'Lobby unreachable (check your internet)'));   // nobody runs the lobby: become it
+      this.claim(ok => end(ok ? 'You are hosting the lobby' : 'Lobby unreachable (check your internet)'));
     });
   },
 
-  // download a game's map from the lobby: cb(data|null)
   fetch(id, cb) {
+    if (Mod.blocked(id)) return cb(null);
     if (this.role === 'dir') { const e = this.ent[id]; return cb(e && e.map ? e.map : null); }
     if (typeof Peer === 'undefined') return cb(null);
     let data = null;
     this.talk({ t: 'get', id }, (m, c, finish) => { if (m.t === 'map' && m.id === id) { data = m.data || null; finish('ok'); } }, () => cb(data));
   },
 
-  /* ----- UI: the "Online games" card on the Games tab ----- */
+  /* ----- UI: "Online games" card ----- */
   start() {
     if (this.started) return; this.started = true;
-    setInterval(() => { if (Auth.me() && !Game.running && Date.now() - this.last > 60000) this.sync(); }, 5000);
+    setInterval(() => {
+      if (!Auth.me()) return;
+      if (Date.now() - this.last > (Game.running ? 45000 : 60000) || (!Game.running && !this.last)) this.sync();
+    }, 5000);
   },
   mount(el) {
     const d = document.createElement('div'); d.id = 'olist'; el.appendChild(d);
@@ -361,11 +439,12 @@ const Lobby = {
   draw() {
     const box = byId('olist'); if (!box) return;
     const own = new Set(DB.games().map(g => g.id));
-    const l = this.list.filter(g => !own.has(g.id));
+    const l = this.list.filter(g => !own.has(g.id) && !Mod.blocked(g.id));
     box.innerHTML = `<div class="card"><h3>🌐 Online games</h3><div class="muted" style="margin-bottom:6px">${esc(this.status)}${this.busy ? ' ...' : ''}</div>` +
-      (l.length ? l.map(g => `<div class="part"><span><b>${esc(g.name)}</b><br><span class="muted">by ${esc(g.author)} · Max ${g.max}</span></span>
+      (l.length ? l.map(g => `<div class="part"><span><b>${esc(g.name)}</b><br><span class="muted">by ${esc(g.author)} ${Auth.isVerified(g.owner) ? '<span class="vb">✔</span>' : ''} · Max ${g.max}</span></span>
         <span><button class="sm" onclick="Play.join('${g.id}')">▶ Play</button></span></div>`).join('')
         : '<div class="muted">No games from other players right now.</div>') +
       `<button class="gray" style="margin-top:8px" onclick="Lobby.last=0;Lobby.sync()">↻ Refresh</button></div>`;
+    if (typeof Social !== 'undefined') Social.draw();
   }
 };
