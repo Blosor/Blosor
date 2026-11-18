@@ -8,52 +8,58 @@ const esc = s => String(s).replace(/[&<>"']/g, c =>
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
-const GV = '⊙'; // platform currency symbol
+const GV = '⊙';
 
 /* =====================================================
-   CONFIG  (edit these before you ship)
+   CONFIG
    ===================================================== */
 const CONFIG = {
-  ADMIN_EMAIL: 'ssaapp257@gmail.com',     // the account registered with this email gets the Admin tab
-  OWNER_CONTACT: 'ownerblosor@gmail.com', // shown in the wallet: where players contact you to top up
-  VOUCHER_SECRET: 'I-Love-U-MOM-TY',      // used to sign voucher codes. CHANGE IT.
-  MAP_PRICE: 3500,                        // cost to publish a map (first publish only)
-  ACC_PRICE: 1090,                        // review fee to submit an accessory
-  MARKET_CUT: 0.03,                       // platform tax on every accessory sale (0.03 = 3%)
+  ADMIN_EMAIL: 'ssaapp257@gmail.com',
+  OWNER_CONTACT: 'ownerblosor@gmail.com',
+  VOUCHER_SECRET: 'I-Love-U-MOM-TY',
+  OWNER_PUB: null,                        // paste the public key from Admin -> Generate moderation key
+  MAP_PRICE: 3500,
+  ACC_PRICE: 1090,
+  MARKET_CUT: 0.03,
   MIN_AGE: 10,
-  MAX_PLAYERS_LIMIT: 50,                  // highest "max players per server" a creator can set
-  MAX_PLACES: 100,                        // saved places per user
-  MAX_ACC_DRAFTS: 100,                    // saved accessories per user
-  MAX_PARTS: 1500,                        // parts per map
-  MAX_ACC_PARTS: 120,                     // parts per accessory
+  MAX_PLAYERS_LIMIT: 50,
+  MAX_PLACES: 100,
+  MAX_ACC_DRAFTS: 100,
+  MAX_PARTS: 1500,
+  MAX_ACC_PARTS: 120,
   MAX_PRICE: 100000000000000,
   MAX_STOCK: 10000000000
 };
 
 /* =====================================================
-   LOCAL DATABASE (localStorage)
-   Replace this object with a server API to go online.
+   LOCAL DATABASE (localStorage). Prefix "by_" = fresh start.
    ===================================================== */
 const DB = {
   get(k, d) {
     try {
-      const v = JSON.parse(localStorage.getItem('bx_' + k));
+      const v = JSON.parse(localStorage.getItem('by_' + k));
       return v === null || v === undefined ? d : v;
     } catch (e) { return d; }
   },
   set(k, v) {
-    try { localStorage.setItem('bx_' + k, JSON.stringify(v)); return true; }
+    try { localStorage.setItem('by_' + k, JSON.stringify(v)); return true; }
     catch (e) { return false; }
   },
-  del(k) { localStorage.removeItem('bx_' + k); },
+  del(k) { localStorage.removeItem('by_' + k); },
   users() { return this.get('users', {}); },
-  games() { return this.get('games', []); }, // metadata only (no parts), so the menu stays fast
+  games() { return this.get('games', []); },
   items() { return this.get('items', []); },
   pending() { return this.get('pending', []); },
-  reports() { return this.get('reports', []); }
+  reports() { return this.get('reports', []); },
+  // delete everything of this app on this device (the moderation key is kept)
+  wipe() {
+    const keep = 'by_modkey';
+    Object.keys(localStorage).forEach(k => {
+      if ((k.startsWith('by_') && k !== keep) || k.startsWith('bx_') || k.startsWith('bl_')) localStorage.removeItem(k);
+    });
+  }
 };
 
-// The heavy part of a game is stored separately and loaded only when somebody enters it.
 const GameData = {
   get(id) { return DB.get('gp_' + id, null); },
   set(id, d) { return DB.set('gp_' + id, d); },
@@ -61,18 +67,26 @@ const GameData = {
 };
 
 /* =====================================================
-   BAD WORD FILTER
+   BAD WORD FILTER (English + Indonesian, owner can add words)
    ===================================================== */
 const Filter = (() => {
   const LEET = { '0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '@': 'a', '$': 's', '!': 'i' };
-  const STRICT = ['fuck', 'shit', 'bitch', 'cunt', 'nigger', 'nigga', 'faggot', 'whore', 'pussy', 'asshole', 'bastard'];
-  const WORDS = ['ass', 'dick', 'cock', 'porn', 'rape', 'slut', 'retard', 'fag'];
-  const EXTRA_BANNED = []; // add your own words here (any language)
+  const STRICT = ['fuck', 'shit', 'bitch', 'cunt', 'nigger', 'nigga', 'faggot', 'whore', 'pussy', 'asshole', 'bastard',
+    'bodoh', 'anjing', 'bangsat', 'kontol', 'memek', 'ngentot', 'jancok', 'jancuk', 'goblok', 'tolol', 'bajingan',
+    'kampret', 'pepek', 'pelacur', 'keparat', 'brengsek', 'sialan', 'jembut'];
+  const WORDS = ['ass', 'dick', 'cock', 'porn', 'rape', 'slut', 'retard', 'fag', 'asu', 'babi', 'tai', 'idiot'];
+  const EXTRA = [];
 
   const squash = s => s.replace(/(.)\1+/g, '$1');
   const cap2 = s => s.replace(/(.)\1{2,}/g, '$1$1');
   const norm = s => String(s).toLowerCase().replace(/[013457@$!]/g, c => LEET[c]);
 
+  function add(ws) {
+    (ws || []).forEach(w => {
+      w = String(w).toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (w.length >= 3 && !EXTRA.includes(w)) EXTRA.push(w);
+    });
+  }
   function has(text) {
     const toks = norm(text).split(/[^a-z]+/).filter(Boolean);
     const checks = [];
@@ -82,22 +96,126 @@ const Filter = (() => {
       else { if (run.length > 2) checks.push(run); run = ''; checks.push(t); }
     }
     if (run.length > 2) checks.push(run);
-    const strict = STRICT.concat(EXTRA_BANNED).map(w => squash(w.toLowerCase()));
+    const strict = STRICT.concat(EXTRA).map(w => squash(norm(w)));
     return checks.some(c => WORDS.includes(cap2(c)) || strict.some(w => squash(c).includes(w)));
   }
-
   function mask(text) {
     text = String(text);
     const out = text.split(/(\s+)/).map(w => (w.trim() && has(w)) ? '#'.repeat(w.length) : w).join('');
     return (out === text && has(text)) ? '#'.repeat(Math.min(text.length, 12)) : out;
   }
-  return { has, mask };
+  add(DB.get('badwords', []));
+  return { has, mask, add };
 })();
+
+/* =====================================================
+   MODERATION: a list signed by the owner (ECDSA P-256).
+   The private key never leaves the owner's browser. Other devices
+   download the list through the lobby and verify it with CONFIG.OWNER_PUB.
+   ===================================================== */
+const Mod = {
+  EMPTY: { v: 0, games: {}, gone: [], users: {}, verified: [], deduct: [], words: [] },
+  list() { return DB.get('mod', this.EMPTY); },
+  ok() { return !!(window.crypto && crypto.subtle); },
+  b64(buf) { let s = ''; new Uint8Array(buf).forEach(b => { s += String.fromCharCode(b); }); return btoa(s); },
+  unb64(s) { const b = atob(s), a = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); return a; },
+  alg: { name: 'ECDSA', namedCurve: 'P-256' },
+
+  async genKey() {
+    const k = await crypto.subtle.generateKey(this.alg, true, ['sign', 'verify']);
+    const priv = await crypto.subtle.exportKey('jwk', k.privateKey), pub = await crypto.subtle.exportKey('jwk', k.publicKey);
+    DB.set('modkey', { priv, pub });
+    DB.del('modhash');
+    return pub;
+  },
+  async sign(s) {
+    const mk = DB.get('modkey', null); if (!mk) return null;
+    const key = await crypto.subtle.importKey('jwk', mk.priv, this.alg, false, ['sign']);
+    return this.b64(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, new TextEncoder().encode(s)));
+  },
+  async verify(p) {
+    try {
+      if (!CONFIG.OWNER_PUB || !p || typeof p.s !== 'string' || typeof p.sig !== 'string' || p.s.length > 200000) return false;
+      const key = await crypto.subtle.importKey('jwk', CONFIG.OWNER_PUB, this.alg, false, ['verify']);
+      return await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, this.unb64(p.sig), new TextEncoder().encode(p.s));
+    } catch (e) { return false; }
+  },
+
+  // current moderation state of this device (owner side)
+  state() {
+    const g = {}, u = {}, us = DB.users();
+    DB.games().forEach(x => { if (x.down) g[x.id] = x.downNote || 'Taken down'; });
+    Object.keys(us).forEach(k => { const b = Auth.banOf(us[k]); if (b) u[k] = { r: b.banReason || 'Violation', u: b.banUntil || 0 }; });
+    return { games: g, gone: DB.get('modgone', []), users: u, verified: DB.get('modver', []), deduct: DB.get('moddeduct', []).slice(-300), words: DB.get('badwords', []) };
+  },
+  async rebuild() {
+    if (!this.ok() || !Auth.isAdmin() || !DB.get('modkey', null)) return null;
+    const st = this.state(), h = JSON.stringify(st);
+    if (h === DB.get('modhash', '') && DB.get('modpack', null)) return this.pack();
+    const list = Object.assign({ v: Date.now() }, st), s = JSON.stringify(list), sig = await this.sign(s);
+    if (!sig) return null;
+    DB.set('modpack', { s, sig }); DB.set('modhash', h);
+    this.apply(list);
+    return this.pack();
+  },
+  pack() { return DB.get('modpack', null); },
+
+  // a pack received from the network
+  async consume(p) {
+    if (!(await this.verify(p))) return;
+    try { const l = JSON.parse(p.s); if (+l.v > this.list().v) this.apply(l); } catch (e) {}
+  },
+
+  // sanitize and store a moderation list, then enforce it on this device
+  apply(l) {
+    if (!l || typeof l !== 'object') return;
+    const id = s => /^[a-z0-9]{4,24}$/.test(String(s)), nm = s => /^[a-z0-9_]{3,20}$/.test(String(s));
+    const c = { v: +l.v || 0, games: {}, gone: [], users: {}, verified: [], deduct: [], words: [] };
+    Object.keys(l.games || {}).slice(0, 500).forEach(k => { if (id(k)) c.games[k] = String(l.games[k]).slice(0, 80); });
+    (l.gone || []).slice(0, 500).forEach(k => { if (id(k)) c.gone.push(String(k)); });
+    Object.keys(l.users || {}).slice(0, 500).forEach(k => { const x = l.users[k] || {}; if (nm(k)) c.users[k] = { r: String(x.r || '').slice(0, 80), u: +x.u || 0 }; });
+    (l.verified || []).slice(0, 500).forEach(k => { if (nm(k)) c.verified.push(String(k)); });
+    (l.deduct || []).slice(0, 300).forEach(d => { if (d && id(d.id) && nm(d.k)) c.deduct.push({ id: String(d.id), k: String(d.k), a: clamp(Math.floor(+d.a || 0), 1, 1e12) }); });
+    (l.words || []).slice(0, 500).forEach(w => { w = String(w).toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 20); if (w.length >= 3) c.words.push(w); });
+    DB.set('mod', c);
+    Filter.add(c.words);
+
+    // games: hide / un-hide / remove on this device
+    const gs = DB.games(); let ch = false;
+    const keepG = gs.filter(g => !c.gone.includes(g.id));
+    if (keepG.length !== gs.length) ch = true;
+    keepG.forEach(g => {
+      if (c.games[g.id]) { if (!g.down) { g.down = true; g.downNote = c.games[g.id]; g.downBy = 'mod'; ch = true; } }
+      else if (g.down && g.downBy === 'mod') { g.down = false; g.downNote = ''; g.downBy = ''; ch = true; }
+    });
+    if (ch) DB.set('games', keepG);
+    gs.filter(g => c.gone.includes(g.id)).forEach(g => GameData.del(g.id));
+    const rc = DB.get('recent', []), keepR = rc.filter(x => !c.games[x] && !c.gone.includes(x));
+    rc.filter(x => !keepR.includes(x)).forEach(x => DB.del('rc_' + x));
+    if (keepR.length !== rc.length) DB.set('recent', keepR);
+    this.deducts();
+  },
+  // GV deductions ordered by the owner: applied once per id for the logged-in player
+  deducts() {
+    const me = Auth.key(); if (!me) return;
+    const done = DB.get('dedone', []); let ch = false;
+    this.list().deduct.forEach(d => { if (d.k === me && !done.includes(d.id)) { Wallet.deduct(me, d.a); done.push(d.id); ch = true; } });
+    if (ch) DB.set('dedone', done.slice(-500));
+  },
+  blocked(id) {
+    const l = this.list();
+    if (l.games[id]) return 'This game was taken down: ' + l.games[id];
+    if (l.gone.includes(id)) return 'This game was removed';
+    const g = DB.games().find(x => x.id === id);
+    return g && g.down ? 'This game was taken down: ' + (g.downNote || 'policy violation') : null;
+  }
+};
 
 /* =====================================================
    AUTH (username + email + date of birth) + BANS
    ===================================================== */
 const Auth = {
+  flash: '',
   hash(s) {
     let h = 5381, g = 52711;
     for (const c of s) {
@@ -138,8 +256,15 @@ const Auth = {
     if (us[id]) return id;
     return Object.keys(us).find(k => us[k].email === id) || null;
   },
-  // an active ban (temporary bans end by themselves)
+  // ban made on this device
   banOf(u) { return u && u.banned && (!u.banUntil || Date.now() < u.banUntil) ? u : null; },
+  // local ban or a ban from the owner's signed list
+  banFor(k, u) {
+    const l = this.banOf(u); if (l) return l;
+    const m = Mod.list().users[k];
+    if (m && (!m.u || Date.now() < m.u)) return { banReason: m.r, banUntil: m.u };
+    return null;
+  },
   banMsg(u) {
     return 'Banned: ' + (u.banReason || 'Violation') + (u.banUntil ? ' (until ' + new Date(u.banUntil).toLocaleDateString() + ')' : ' (permanent)');
   },
@@ -154,10 +279,17 @@ const Auth = {
     us[k].banned = false; us[k].banUntil = 0; us[k].banReason = '';
     return DB.set('users', us);
   },
+  setPass(k, p) {
+    const us = DB.users(); if (!us[k] || String(p).length < 6) return false;
+    us[k].pass = this.hash(k + ':' + p);
+    return DB.set('users', us);
+  },
   login(id, p) {
     const k = this.find(id), us = DB.users();
     if (!k || us[k].pass !== this.hash(k + ':' + p)) return 'Wrong username/email or password';
-    if (this.banOf(us[k])) return this.banMsg(us[k]);
+    const b = this.banFor(k, us[k]);
+    if (b) return this.banMsg(b);
+    if (Filter.has(us[k].name)) return 'Your username is not allowed. Contact the owner.';
     DB.set('session', k);
     return null;
   },
@@ -173,12 +305,19 @@ const Auth = {
   key() { return DB.get('session', null); },
   me() {
     const k = this.key(), u = k ? DB.users()[k] : null;
-    if (!u || this.banOf(u)) return null;
+    if (!u) return null;
+    const b = this.banFor(k, u);
+    if (b) { this.flash = this.banMsg(b); this.logout(); return null; }
+    if (Filter.has(u.name)) { this.flash = 'Your username is not allowed. Contact the owner.'; this.logout(); return null; }
     return Object.assign({ key: k }, u);
   },
   isAdmin() {
-    const m = this.me();
-    return !!m && (m.email || '').toLowerCase() === CONFIG.ADMIN_EMAIL.toLowerCase();
+    const k = this.key(), u = k ? DB.users()[k] : null;
+    return !!u && (u.email || '').toLowerCase() === CONFIG.ADMIN_EMAIL.toLowerCase();
+  },
+  isVerified(k) {
+    k = String(k || '').toLowerCase();
+    return Mod.list().verified.includes(k) || DB.get('modver', []).includes(k);
   }
 };
 
@@ -200,6 +339,14 @@ const Wallet = {
     us[k].gv -= n;
     DB.set('users', us);
     return true;
+  },
+  // take away up to n (never below 0). Returns how much was taken.
+  deduct(k, n) {
+    const us = DB.users(); if (!us[k]) return 0;
+    const t = Math.min(us[k].gv || 0, n);
+    us[k].gv = (us[k].gv || 0) - t;
+    DB.set('users', us);
+    return t;
   }
 };
 
@@ -238,7 +385,7 @@ const Voucher = {
    ===================================================== */
 const DEFAULT_COLORS = { head: '#f5cd30', torso: '#13a538', la: '#f5cd30', ra: '#f5cd30', ll: '#0d69ac', rl: '#0d69ac' };
 const PART_LABELS = { head: 'Head', torso: 'Torso', la: 'Left Arm', ra: 'Right Arm', ll: 'Left Leg', rl: 'Right Leg' };
-const SLOTS = ['Hat', 'Face', 'Neck', 'Back', 'Waist']; // wear.js adds Hair, Shoulder, T-Shirt, Pants, Shoes, Gloves
+const SLOTS = ['Hat', 'Face', 'Neck', 'Back', 'Waist'];
 
 const Inv = {
   list(k) { return DB.get('own_' + k, []); },
@@ -257,7 +404,6 @@ const Avatar = {
     return { colors: Object.assign({}, DEFAULT_COLORS, a.colors), equipped: a.equipped || [], itemColors: a.itemColors || {} };
   },
   set(k, a) { DB.set('av_' + k, a); },
-  // colors + the accessories the user owns and wears. "Recolor" items use the wearer's chosen color.
   resolve(k) {
     const a = this.get(k), own = Inv.ids(k), all = DB.items();
     const items = a.equipped.filter(id => own.includes(id)).map(id => all.find(i => i.id === id)).filter(i => i && !i.down)
@@ -268,7 +414,6 @@ const Avatar = {
       });
     return { colors: a.colors, items };
   },
-  // one item per slot: wearing a new Hat removes the old Hat
   toggle(k, id) {
     const a = this.get(k), it = DB.items().find(x => x.id === id);
     if (!it) return;
@@ -283,7 +428,6 @@ const Avatar = {
 };
 
 const Shop = {
-  // 3% platform tax on every purchase. The creator receives the rest.
   buy(k, id) {
     const items = DB.items(), it = items.find(x => x.id === id);
     if (!it || it.down) return 'Item not available';
@@ -318,7 +462,7 @@ const Drafts = makeStore('acc_', CONFIG.MAX_ACC_DRAFTS);
 
 function newPlace() {
   return {
-    id: uid(), name: '', desc: '', gameId: null, maxPlayers: 8, spawn: null, env: null,
+    id: uid(), name: '', desc: '', gameId: null, maxPlayers: 8, spawn: null, env: null, paid: false,
     parts: [
       { type: 'part', name: 'Baseplate', parent: null, x: 0, y: -1, z: 0, w: 200, h: 2, d: 200, color: '#5aa040' },
       { type: 'part', name: 'SpawnLocation', parent: null, x: 0, y: 0.5, z: 0, w: 6, h: 1, d: 6, color: '#a3a2a5', spawn: true }
@@ -376,7 +520,6 @@ const Subs = {
     this.mark(s, 'rejected', reason);
     return { refunded, code: refunded ? '' : Voucher.make(s.creatorKey, s.fee) };
   },
-  // owner takes a live item off the shop (and off every avatar)
   takedown(id, reason) {
     const items = DB.items(), it = items.find(x => x.id === id);
     if (!it) return 'Item not found';
@@ -396,7 +539,6 @@ const Subs = {
     return null;
   },
   exportCode(s) { return btoa(unescape(encodeURIComponent(JSON.stringify(s)))); },
-  // sanitize parts (also used for avatars received from other players)
   cleanParts(parts, max) {
     return (Array.isArray(parts) ? parts : []).slice(0, max).map(p => ({
       type: 'part',
