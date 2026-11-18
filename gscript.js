@@ -1,10 +1,10 @@
 /* =====================================================
    SCRIPTS
-   - Script       : runs on the SERVER (the host device). Changes are sent to every player.
-   - LocalScript  : runs on EACH player's own device. Only affects that player.
-                    LocalScripts inside StarterGui / Items talk to the server with remote.fire().
-   Both run inside a Web Worker: no localStorage (wallet/accounts), no DOM, no page
-   variables, no network. The only way out is a whitelist of validated messages.
+   - Script       : SERVER (host device). Changes are sent to every player.
+   - LocalScript  : each player's own device, only affects that player.
+   - ModuleScript : code shared with require('Name').
+   Workers have no localStorage (wallet/accounts), no DOM, no page variables,
+   no network. The only way out is a whitelist of validated messages.
    ===================================================== */
 
 function sanPart(p) {
@@ -12,13 +12,17 @@ function sanPart(p) {
   if (!p || typeof p !== 'object') return o;
   ['x', 'y', 'z'].forEach(k => { if (p[k] !== undefined) o[k] = num(p[k], -5000, 5000, 0); });
   ['w', 'h', 'd'].forEach(k => { if (p[k] !== undefined) o[k] = num(p[k], 0.2, 2000, 1); });
+  ['rx', 'ry', 'rz'].forEach(k => { if (p[k] !== undefined) o[k] = num(p[k], -360, 360, 0); });
   if (typeof p.color === 'string' && /^#[0-9a-f]{6}$/i.test(p.color)) o.color = p.color;
   if (typeof p.name === 'string') o.name = Filter.mask(p.name.slice(0, 30)) || 'Part';
+  if (typeof p.shape === 'string' && SHAPES.includes(p.shape)) o.shape = p.shape;
   if (p.visible !== undefined) o.visible = !!p.visible;
   if (p.collide !== undefined) o.collide = !!p.collide;
   if (p.anch !== undefined) o.anch = !!p.anch;
   if (p.canCollide !== undefined) o.collide = !!p.canCollide;
   if (p.anchored !== undefined) o.anch = !!p.anchored;
+  if (p.t !== undefined) o.t = num(p.t, 0, 1, 0);
+  if (p.transparency !== undefined) o.t = num(p.transparency, 0, 1, 0);
   return o;
 }
 
@@ -34,8 +38,8 @@ function scriptWorkerMain() {
     try { return JSON.stringify(v); } catch (e) { return String(v); }
   }).join(' ').slice(0, 300);
 
-  let MODE = 'local', ME = '', T = 0, seq = 0, ready = false;
-  const PL = {}, parts = {}, touch = {}, HC = {}, itemEv = {}, GU = {}, clk = {}, rem = {};
+  let MODE = 'local', ME = '', T = 0, seq = 0, ready = false, cid = 0, PLY;
+  const PL = {}, parts = {}, touch = {}, HC = {}, itemEv = {}, GU = {}, clk = {}, rem = {}, rh = {}, pend = {}, MODS = {}, MC = {}, STORE = {};
   const ev = { tick: [], chat: [], join: [], leave: [], died: [], respawn: [] };
 
   const print = (...a) => send({ op: 'out', l: 0, t: fmt(a) });
@@ -66,10 +70,11 @@ function scriptWorkerMain() {
     };
   })());
 
-  const FIELDS = ['x', 'y', 'z', 'w', 'h', 'd', 'color', 'name', 'visible', 'canCollide', 'anchored'];
+  const FIELDS = ['x', 'y', 'z', 'w', 'h', 'd', 'color', 'name', 'visible', 'canCollide', 'anchored', 'shape', 'rx', 'ry', 'rz', 'transparency'];
   const mk = d => {
     const o = { id: d.id, name: d.name, x: d.x, y: d.y, z: d.z, w: d.w, h: d.h, d: d.d, color: d.color, visible: true,
-      canCollide: d.canCollide !== false, anchored: d.anchored !== false };
+      canCollide: d.canCollide !== false, anchored: d.anchored !== false, shape: d.shape || 'block',
+      rx: d.rx || 0, ry: d.ry || 0, rz: d.rz || 0, transparency: d.t || d.transparency || 0 };
     o.set = q => {
       const p = {};
       FIELDS.forEach(k => { if (q && q[k] !== undefined) { p[k] = q[k]; o[k] = q[k]; } });
@@ -89,7 +94,8 @@ function scriptWorkerMain() {
       const d = {
         id: (MODE === 'server' ? 's' : 'l') + (++seq), name: String(o.name || 'Part'),
         x: fin(o.x, 0), y: fin(o.y, 5), z: fin(o.z, 0), w: fin(o.w, 4), h: fin(o.h, 1), d: fin(o.d, 2),
-        color: String(o.color || '#a3a2a5'), anchored: o.anchored !== false, canCollide: o.canCollide !== false
+        color: String(o.color || '#a3a2a5'), anchored: o.anchored !== false, canCollide: o.canCollide !== false,
+        shape: String(o.shape || 'block'), rx: fin(o.rx, 0), ry: fin(o.ry, 0), rz: fin(o.rz, 0), transparency: fin(o.transparency, 0)
       };
       const h = mk(d); parts[d.id] = h; send({ op: 'spawn', d }); return h;
     }
@@ -99,7 +105,6 @@ function scriptWorkerMain() {
     list: () => Object.keys(PL).map(handle),
     find: nm => { const k = Object.keys(PL).find(i => PL[i].name === nm); return k ? handle(k) : null; },
     get count() { return Object.keys(PL).length; },
-    // players in front of `h` (range in studs, angle = half cone in degrees)
     near: (h, r, a) => {
       const me = PL[h && h.id]; if (!me) return [];
       r = fin(r, 8);
@@ -119,10 +124,11 @@ function scriptWorkerMain() {
     get time() { return T; },
     onTick: f => { if (typeof f === 'function') ev.tick.push(f); },
     onChat: f => { if (typeof f === 'function') ev.chat.push(f); },
-    setLighting: o => send({ op: 'light', o: o || {} })
+    setLighting: o => send({ op: 'light', o: o || {} }),
+    allowCustomAnimations: v => send({ op: 'anim', v: !!v }),
+    showHotbar: v => send({ op: 'hotbar', v: !!v })
   };
 
-  // StarterGui elements (LocalScript only)
   const guiH = d => {
     const o = { id: d.id, name: d.name, text: d.text, visible: d.visible !== false, color: d.color };
     o.set = q => {
@@ -135,12 +141,30 @@ function scriptWorkerMain() {
   };
   const gui = { find: nm => Object.values(GU).find(g => g.name === nm) || null, list: () => Object.values(GU) };
 
-  // talk between LocalScripts (client) and Scripts (server)
+  // RemoteEvent / RemoteFunction (names can be declared in StoreServer)
   const remote = {
     on: (n, f) => { if (typeof f === 'function') (rem[String(n)] = rem[String(n)] || []).push(f); },
     fire: (n, d) => { if (MODE === 'local') send({ op: 'rem', n: String(n), d }); },
     fireClient: (p, n, d) => { if (MODE === 'server') send({ op: 'remc', n: String(n), d, to: String(p && p.id !== undefined ? p.id : p) }); },
-    fireAll: (n, d) => { if (MODE === 'server') send({ op: 'remc', n: String(n), d, to: '*' }); }
+    fireAll: (n, d) => { if (MODE === 'server') send({ op: 'remc', n: String(n), d, to: '*' }); },
+    invoke: (n, d) => MODE !== 'local' ? Promise.resolve(null) : new Promise(res => {
+      const c = ++cid; pend[c] = res;
+      send({ op: 'rinv', n: String(n), d, c });
+      setTimeout(() => { if (pend[c]) { delete pend[c]; res(null); } }, 10000);
+    }),
+    handle: (n, f) => { if (typeof f === 'function') rh[String(n)] = f; }
+  };
+
+  // small key-value store (saved on the host device, per game)
+  const store = {
+    get: k => STORE[String(k)],
+    set: (k, v) => {
+      k = String(k).slice(0, 60);
+      try { const s = JSON.stringify(v === undefined ? null : v); if (s.length > 20000) return false; STORE[k] = JSON.parse(s); if (MODE === 'server') send({ op: 'sset', k, v: STORE[k] }); return true; }
+      catch (e) { return false; }
+    },
+    remove: k => { k = String(k); delete STORE[k]; if (MODE === 'server') send({ op: 'sdel', k }); },
+    keys: () => Object.keys(STORE)
   };
 
   const itemObj = name => {
@@ -148,11 +172,23 @@ function scriptWorkerMain() {
     return { name, onActivate: r('act'), onEquip: r('eq'), onUnequip: r('un') };
   };
 
+  // ModuleScript: require('Name') runs the module once and caches what it returns
+  const require = n => {
+    n = String(n);
+    if (n in MC) return MC[n];
+    const s = MODS[n]; if (s === undefined) throw new Error('Module not found: ' + n);
+    MC[n] = undefined;
+    const mod = { exports: {} };
+    const f = new Function('workspace', 'player', 'players', 'game', 'gui', 'remote', 'store', 'print', 'warn', 'error', 'wait', 'chat', 'notify', 'require', 'module', 'exports', 'self', 'globalThis', 'window', '"use strict";\n' + s);
+    const r = f(workspace, PLY, players, game, gui, remote, store, print, warn, error, wait, chat, notify, require, mod, mod.exports, undefined, undefined, undefined);
+    return MC[n] = r !== undefined ? r : mod.exports;
+  };
+
   const run = (list, player) => list.forEach(s => {
     try {
-      const f = new AsyncFn('workspace', 'player', 'players', 'game', 'item', 'gui', 'remote', 'print', 'warn', 'error', 'wait', 'chat', 'notify',
+      const f = new AsyncFn('workspace', 'player', 'players', 'game', 'item', 'gui', 'remote', 'store', 'require', 'print', 'warn', 'error', 'wait', 'chat', 'notify',
         'self', 'globalThis', 'window', '"use strict";\n' + s.code);
-      f(workspace, player, players, game, s.item ? itemObj(s.item) : undefined, gui, remote, print, warn, error, wait, chat, notify,
+      f(workspace, player, players, game, s.item ? itemObj(s.item) : undefined, gui, remote, store, require, print, warn, error, wait, chat, notify,
         undefined, undefined, undefined)
         .catch(e => error('[' + s.name + '] ' + (e && e.message || e)));
     } catch (e) { error('[' + s.name + '] ' + (e && e.message || e)); }
@@ -165,7 +201,10 @@ function scriptWorkerMain() {
       (m.players || []).forEach(p => { PL[p.id] = p; });
       (m.parts || []).forEach(d => { parts[d.id] = mk(d); });
       (m.gui || []).forEach(d => { GU[d.id] = guiH(d); });
-      run(m.scripts || [], MODE === 'local' ? handle(ME) : undefined);
+      (m.mods || []).forEach(x => { MODS[String(x.name)] = String(x.code); });
+      Object.assign(STORE, m.store || {});
+      PLY = MODE === 'local' ? handle(ME) : undefined;
+      run(m.scripts || [], PLY);
       ready = true;
     } else if (m.t === 'tick') {
       T = fin(m.time, 0);
@@ -189,9 +228,13 @@ function scriptWorkerMain() {
     else if (m.t === 'un') ((itemEv[m.item] || {}).un || []).forEach(f => call(f));
     else if (m.t === 'gclick') (clk[m.id] || []).forEach(f => call(f));
     else if (m.t === 'rem') (rem[String(m.n)] || []).forEach(f => MODE === 'server' ? call(f, handle(String(m.pid)), m.d) : call(f, m.d));
+    else if (m.t === 'rinv') {
+      const f = rh[String(m.n)], pid = String(m.pid), done = v => send({ op: 'rret', c: m.c, pid, v });
+      if (!f) return done(null);
+      try { Promise.resolve(f(handle(pid), m.d)).then(done, () => done(null)); } catch (e) { error('Error: ' + (e && e.message || e)); done(null); }
+    } else if (m.t === 'rres') { const r = pend[m.c]; if (r) { delete pend[m.c]; r(m.v === undefined ? null : m.v); } }
   };
 
-  // lock down the worker: no network, no nested workers, no storage, no way to forge messages
   setInterval(() => send({ op: 'hb' }), 500);
   const BAN = ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'importScripts', 'indexedDB', 'caches', 'Worker',
     'SharedWorker', 'BroadcastChannel', 'WebTransport', 'MessageChannel', 'postMessage', 'close', 'navigator',
@@ -212,7 +255,7 @@ function makeHost(mode) {
 
     supported() { return typeof Worker !== 'undefined' && typeof Blob !== 'undefined' && window.URL && URL.createObjectURL; },
 
-    start(G, scripts, snapshot) {
+    start(G, scripts, snapshot, mods) {
       this.stop();
       if (!scripts.length) return;
       if (!this.supported()) return G.out('Scripts are not supported on this device.', 2, mode);
@@ -226,7 +269,7 @@ function makeHost(mode) {
       const w = this.w;
       w.onmessage = e => { if (this.w === w) this.msg(G, e.data); };
       w.onerror = e => { if (e.preventDefault) e.preventDefault(); G.out('Script error: ' + String(e.message || 'unknown').slice(0, 200), 2, mode); };
-      w.postMessage({ t: 'init', mode, me: G.myId, scripts, parts: snapshot, players: G.playersState(), gui: srv ? [] : G.guiList() });
+      w.postMessage({ t: 'init', mode, me: G.myId, scripts, parts: snapshot, players: G.playersState(), gui: srv ? [] : G.guiList(), mods: mods || [], store: srv ? G.store : {} });
       G.out((srv ? 'Scripts' : 'LocalScripts') + ' started (' + scripts.length + ').', 0, mode);
     },
     stop() { if (this.w) { try { this.w.terminate(); } catch (e) {} } this.w = null; this.watching = {}; },
@@ -238,7 +281,7 @@ function makeHost(mode) {
       const now = performance.now();
       this.lastMsg = now;
       if (now - this.opsT > 1000) { this.opsT = now; this.ops = 0; }
-      if (++this.ops > 4000) return this.kill(G, 'Script stopped: too many operations per second.');
+      if (++this.ops > 20000) return this.kill(G, 'Script stopped: too many operations per second.');
       const id = String(m.id || ''), rep = srv;
       const mine = G.objs.has(id) && !(srv && id[0] === 'l');
       switch (m.op) {
@@ -263,13 +306,17 @@ function makeHost(mode) {
         case 'chat': G.scriptChat(mode, Filter.mask(String(m.t || '').slice(0, 120))); break;
         case 'notify': G.applyOp({ k: 'notify', t: Filter.mask(String(m.t || '').slice(0, 80)), s: num(m.s, 1, 10, 3) }, rep); break;
         case 'light': G.applyOp({ k: 'light', o: Env.part(m.o) }, rep); break;
+        case 'anim': G.applyOp({ k: 'anim', v: !!m.v }, rep); break;
+        case 'hotbar': if (!srv) G.showHotbar(!!m.v); break;
+        case 'sset': if (srv) G.storeSet(String(m.k || '').slice(0, 60), m.v); break;
+        case 'sdel': if (srv) G.storeDel(String(m.k || '').slice(0, 60)); break;
         case 'gui': {
           if (srv) break;
           const q = m.p || {};
           G.guiSet(id, { text: typeof q.text === 'string' ? q.text : undefined, visible: q.visible === undefined ? undefined : !!q.visible, color: typeof q.color === 'string' ? q.color : undefined });
           break;
         }
-        case 'rem': case 'remc': G.remoteOp(mode, m); break;
+        case 'rem': case 'remc': case 'rinv': case 'rret': G.remoteOp(mode, m); break;
         default: break;
       }
     },
