@@ -4,7 +4,6 @@
 const PIX = () => Math.min(window.devicePixelRatio || 1, 1.5);
 const SHADOW = () => (Math.min(innerWidth, innerHeight) >= 700 ? 2048 : 1024);
 
-/* One WebGL renderer shared by Studio and Game. */
 const Gfx = {
   r: null, lost: false,
   init() {
@@ -43,11 +42,9 @@ function skyTexture(top, bot) {
   return new THREE.CanvasTexture(c);
 }
 
-/* Lighting / sky settings of a map */
 const DEF_ENV = { time: 13, bright: 1, skyTop: '#3d7fd6', skyBot: '#bfe3ff', fog: 450, shadows: true };
 const hexOk = (v, d) => (typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v)) ? v : d;
 const Env = {
-  // only the keys that are present and valid (used for script / network input)
   part(e) {
     const o = {};
     if (!e || typeof e !== 'object') return o;
@@ -129,7 +126,7 @@ const Mats = {
     if (!this.c[col]) {
       const side = new THREE.MeshLambertMaterial({ color: col });
       const top = new THREE.MeshLambertMaterial({ color: col, map: Tex.studs() });
-      this.c[col] = [side, side, top, side, side, side]; // +x -x +y(top) -y +z -z
+      this.c[col] = [side, side, top, side, side, side];
     }
     return this.c[col];
   },
@@ -144,25 +141,54 @@ const Mats = {
 };
 
 function partGeo(p, kind) {
+  if (p.shape === 'ball') return new THREE.SphereGeometry(0.5, 24, 16).scale(p.w, p.h, p.d);
+  if (p.shape === 'cyl') { const c = new THREE.CylinderGeometry(0.5, 0.5, 1, 24); c.rotateZ(Math.PI / 2); return c.scale(p.w, p.h, p.d); }
   const g = new THREE.BoxGeometry(p.w, p.h, p.d), uv = g.attributes.uv;
   if (kind === 'ladder') {
     const vs = [p.h, p.h, p.d, p.d, p.h, p.h];
     for (let f = 0; f < 6; f++) for (let j = 0; j < 4; j++) uv.setY(f * 4 + j, uv.getY(f * 4 + j) * vs[f]);
   } else {
-    for (let i = 8; i < 12; i++) uv.setXY(i, uv.getX(i) * p.w, uv.getY(i) * p.d); // 1 stud per unit on top
+    for (let i = 8; i < 12; i++) uv.setXY(i, uv.getX(i) * p.w, uv.getY(i) * p.d);
   }
   uv.needsUpdate = true;
   return g;
 }
 
-// flat = accessory mode (no studs, no special kinds)
+// material of a part (flat = accessory mode). Transparent parts get their own cloned material.
+function partMat(p, flat, kind) {
+  const sp = p.shape === 'ball' || p.shape === 'cyl';
+  let m = (flat || (sp && kind !== 'water' && kind !== 'lava')) ? Mats.flat(p.color) : Mats.forPart(p, kind);
+  const t = clamp(+p.t || 0, 0, 1);
+  if (t > 0 && kind !== 'water') {
+    const mk = x => { const c = x.clone(); c.transparent = true; c.opacity = 1 - t; c.depthWrite = t < 0.5; c.userData = { own: 1 }; return c; };
+    m = Array.isArray(m) ? m.map(mk) : mk(m);
+  }
+  return m;
+}
+function freeMat(mesh) {
+  const m = mesh.material;
+  (Array.isArray(m) ? m : [m]).forEach(x => { if (x && x.userData && x.userData.own) x.dispose(); });
+}
+
+function styleMesh(m, p, flat, kind) {
+  m.position.set(p.x, p.y, p.z);
+  m.rotation.order = 'YXZ';
+  m.rotation.set((p.rx || 0) * D2, (p.ry || 0) * D2, (p.rz || 0) * D2);
+  m.castShadow = kind !== 'water' && kind !== 'ladder' && (+p.t || 0) < 0.5;
+  m.receiveShadow = kind !== 'water';
+}
 function partMesh(p, flat, kind) {
   kind = flat ? '' : (kind || '');
-  const m = new THREE.Mesh(partGeo(p, kind), flat ? Mats.flat(p.color) : Mats.forPart(p, kind));
-  m.position.set(p.x, p.y, p.z);
-  m.castShadow = kind !== 'water' && kind !== 'ladder';
-  m.receiveShadow = kind !== 'water';
+  const m = new THREE.Mesh(partGeo(p, kind), partMat(p, flat, kind));
+  styleMesh(m, p, flat, kind);
   return m;
+}
+// rebuild geometry / material / transform of an existing mesh
+function applyPart(m, p, flat, kind) {
+  kind = flat ? '' : (kind || '');
+  m.geometry.dispose(); m.geometry = partGeo(p, kind);
+  freeMat(m); m.material = partMat(p, flat, kind);
+  styleMesh(m, p, flat, kind);
 }
 
 function spawnOf(parts) {
