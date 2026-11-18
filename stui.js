@@ -1,7 +1,25 @@
 /* =====================================================
    STUDIO UI (modes, ribbon, explorer, properties,
    script editor, lighting, save / exit, publish, submit)
+   New buttons / fields (shapes, rotation, transparency, modules,
+   StoreServer) are added to the page here, so index.html stays as it is.
    ===================================================== */
+(function inject() {
+  const q = s => document.querySelector(s);
+  const after = (sel, html) => { const e = q(sel); if (e) e.insertAdjacentHTML('afterend', html); };
+  after('#stRibbon [data-tool=scale]', '<button data-tool="rotate" class="only-map"><i>⟲</i>Rotate</button>');
+  after('#stRibbon [data-act=addPad]', '<button data-act="addBall" class="only-map"><i>⚽</i>Ball</button><button data-act="addCyl" class="only-map"><i>🛢</i>Cylinder</button>');
+  after('#stRibbon [data-act=addLScript]', '<button data-act="addModule" class="only-map"><i>📚</i>Module</button>' +
+    '<button data-act="addRemote" class="only-map"><i>📡</i>RemoteEvent</button><button data-act="addRFunc" class="only-map"><i>🔁</i>RemoteFunction</button>');
+  const t90 = q('#stRibbon [data-act=rotate]'); if (t90) t90.innerHTML = '<i>⟳</i>Turn 90°';
+  const pc = q('#pc');
+  if (pc) pc.insertAdjacentHTML('beforebegin',
+    '<div class="only-map"><label>Shape</label><select id="pshape"><option value="block">Block</option><option value="ball">Ball</option><option value="cyl">Cylinder</option></select>' +
+    '<label>Rotation degrees (X, Y, Z)</label><div class="r3"><input type="number" id="prx" step="1"><input type="number" id="pry" step="1"><input type="number" id="prz" step="1"></div>' +
+    '<div class="nud"><button data-n="rx,-1">RX−</button><button data-n="rx,1">RX+</button><button data-n="ry,-1">RY−</button><button data-n="ry,1">RY+</button><button data-n="rz,-1">RZ−</button><button data-n="rz,1">RZ+</button></div>' +
+    '<label>Transparency (0 visible - 1 hidden)</label><input type="number" id="ptr" min="0" max="1" step="0.1"></div>');
+})();
+
 const DEMO = {
   script: `// Script = SERVER. Runs only while playing, changes are seen by everyone.
 // Open Output (⌨) in Test Play to see print().
@@ -20,12 +38,23 @@ const lift = workspace.spawn({ name: 'Lift', x: 0, y: 3, z: 14, w: 8, h: 1, d: 8
 
 // part.onTouch gives you the player that touched it
 lift.onTouch(p => { notify(p.name + ' touched the lift!', 2); });
+
+// a RemoteFunction: a LocalScript can ask the server for data
+remote.handle('GetData', (player, data) => ({ hello: player.name, count: players.count }));
 `,
   localscript: `// LocalScript runs on EACH player's own device and only affects that player.
 print('Hello from LocalScript, I am ' + player.name);
 notify('Welcome, ' + player.name + '!', 3);
 
 player.onDied(() => print('I died'));
+
+// ask the server (a Script with remote.handle('GetData', ...))
+remote.invoke('GetData', { a: 1 }).then(r => print('server says', r));
+`,
+  module: `// ModuleScript: other scripts load it with  const m = require('ModuleScript');
+const M = {};
+M.add = (a, b) => a + b;
+return M;
 `
 };
 const ITEM_DEMO = {
@@ -42,6 +71,7 @@ remote.on('attack', (p, data) => {
   localscript: `// LocalScript inside an Item = runs on the player's device.
 item.onEquip(() => notify('Item equipped', 1));
 item.onActivate(() => notify('Swing!', 1));
+// game.showHotbar(false) hides the default hotbar if you build your own UI in StarterGui
 `
 };
 const GUI_DEMO = `// LocalScript inside a ScreenGui / Button. Name of the button = 'Button'.
@@ -56,12 +86,15 @@ const SCRIPT_HELP = `print / warn / error(...)  -> Output panel (Test Play)
 wait(seconds)  use:  await wait(1)     (setTimeout also works)
 chat('text')   notify('text', seconds)
 
-SCRIPT (server)  /  LOCALSCRIPT (each player)
-workspace.find(name), findAll(name), spawn({name,x,y,z,w,h,d,color,anchored,canCollide})
-part: x y z w h d color name visible canCollide anchored
+SCRIPT (server)  /  LOCALSCRIPT (each player)  /  MODULESCRIPT (require)
+workspace.find(name), findAll(name), spawn({name,x,y,z,w,h,d,color,shape,rx,ry,rz,transparency,anchored,canCollide})
+part: x y z w h d color name visible canCollide anchored shape rx ry rz transparency
 part.set({...})  part.moveTo(x,y,z,seconds)  part.destroy()
 part.onTouch(fn)   Script: fn(player)   LocalScript: fn()
+shape: 'block' | 'ball' | 'cyl'    rx/ry/rz = rotation in degrees    transparency 0..1
 Names Water / Lava / Ladder / Sitting place / Jump pad-N also work on spawned parts.
+
+require('ModuleName')  -> what the module returns (cached)
 
 players.list()  players.find(name)  players.count  players.onJoin(fn)  players.onLeave(fn)
 players.near(player, range, halfAngleDeg)  -> players in FRONT of that player
@@ -69,16 +102,21 @@ player handle: id name x y z face health maxHealth alive
   teleport(x,y,z) setHealth(n) damage(n) heal(n) kill()
   setSpeed(n) setJumpPower(n) lay() stand()
 LocalScript: the variable  player  is you (it can only change you).
-Script: use players / the player given to your callbacks.
 
 game.time  game.onTick(fn)  game.onChat((player, text) => ...)  [LocalScript: (name, text)]
 game.setLighting({ time: 0-24, bright: 0.1-2, skyTop:'#hex', skyBot:'#hex', fog: 60-3000, shadows: true })
+game.allowCustomAnimations(false)   -> everyone uses the standard animations and body
+game.showHotbar(false)              -> hide the default item hotbar
 
-REMOTE (small JSON data only)
-LocalScript: remote.fire('name', data)         -> server
-Script:      remote.on('name', (player, data) => ...)
+REMOTE (StoreServer lists the allowed names; if it has none, any name works)
+LocalScript: remote.fire('name', data)          Script: remote.on('name', (player, data) => ...)
+LocalScript: const r = await remote.invoke('name', data)
+Script:      remote.handle('name', (player, data) => value)     (value can be a Promise)
 Script:      remote.fireClient(player, 'name', data)   remote.fireAll('name', data)
 LocalScript: remote.on('name', data => ...)
+
+store (Script): store.get(key)  store.set(key, value)  store.remove(key)  store.keys()
+  JSON values up to 20 KB, 200 keys, saved per game on the host device
 
 GUI (LocalScript only, elements from StarterGui)
 gui.find('Name') / gui.list()   element: text visible color
@@ -131,6 +169,7 @@ const St = {
       const p = Studio.prim(); if (!p) return;
       let nm = ($('#pn').value.trim() || p.type).slice(0, 30);
       if (Filter.has(nm)) { toast('That name is not allowed'); nm = p.name; }
+      if (p.type === 'remote' || p.type === 'rfunc') return Studio.patch({ name: nm.replace(/[^\w]/g, '').slice(0, 30) || 'Remote' });
       if (Studio.isScriptType(p.type)) return Studio.patch({ name: nm, off: !$('#pOn').checked });
       const n = (id, d, min) => { const v = parseFloat($('#' + id).value); return isNaN(v) ? d : Math.max(min === undefined ? -100000 : min, v); };
       if (p.type === 'btn' || p.type === 'lbl') {
@@ -146,7 +185,12 @@ const St = {
         name: nm, x: n('px', p.x), y: n('py', p.y), z: n('pz', p.z),
         w: n('pw', p.w, 0.2), h: n('ph', p.h, 0.2), d: n('pd', p.d, 0.2)
       };
-      if (this.type === 'map') { o.spawn = $('#ps').checked; o.anch = $('#pAn').checked; o.col = $('#pCo').checked; }
+      if (this.type === 'map') {
+        o.spawn = $('#ps').checked; o.anch = $('#pAn').checked; o.col = $('#pCo').checked;
+        o.shape = $('#pshape').value;
+        o.rx = clamp(n('prx', p.rx || 0), -360, 360); o.ry = clamp(n('pry', p.ry || 0), -360, 360); o.rz = clamp(n('prz', p.rz || 0), -360, 360);
+        o.t = clamp(n('ptr', p.t || 0), 0, 1);
+      }
       if (this.type === 'avatar') o.attach = $('#pa').value;
       Studio.patch(o);
     });
@@ -205,7 +249,7 @@ const St = {
     const hn = home === 'SS' ? null : m[home];
     const inItem = hn && Tree.itemOf(m, hn), inGui = hn && Tree.root(m, hn) === 'SG';
     if (inGui && type === 'script') { type = 'localscript'; toast('GUI scripts must be LocalScripts'); }
-    const code = inGui ? GUI_DEMO : (inItem ? ITEM_DEMO : DEMO)[type];
+    const code = type === 'module' ? DEMO.module : inGui ? GUI_DEMO : (inItem ? ITEM_DEMO : DEMO)[type];
     const n = S.addScript(type, code);
     if (n) this.editScript();
   },
@@ -216,10 +260,13 @@ const St = {
       addLava: () => S.add({ name: 'Lava', w: 8, h: 1, d: 8, color: '#ff5a00' }),
       addLadder: () => S.add({ name: 'Ladder', w: 3, h: 14, d: 0.6, y: 7, color: '#b5651d' }),
       addPad: () => S.add({ name: 'Jump pad', w: 6, h: 1, d: 6, y: 0.5, color: '#2ee66b' }),
+      addBall: () => S.add({ name: 'Ball', shape: 'ball', w: 4, h: 4, d: 4, y: 3, color: '#e53935' }),
+      addCyl: () => S.add({ name: 'Cylinder', shape: 'cyl', w: 6, h: 4, d: 4, y: 3, color: '#1e88e5' }),
       addSeat: () => S.add({ name: 'Sitting place', w: 4, h: 1, d: 4, y: 1, color: '#8d6e63' }),
       addModel: () => S.addContainer('model'), addFolder: () => S.addContainer('folder'),
       addItem: () => S.addItem(),
-      addScript: () => this.addS('script'), addLScript: () => this.addS('localscript'),
+      addScript: () => this.addS('script'), addLScript: () => this.addS('localscript'), addModule: () => this.addS('module'),
+      addRemote: () => S.addRemote(false), addRFunc: () => S.addRemote(true),
       addGui: () => S.addGui('gui'), addBtn: () => S.addGui('btn'), addLbl: () => S.addGui('lbl'),
       rename: () => this.rename(), dup: () => S.dup(), del: () => S.del(),
       cut: () => S.cut(), copy: () => S.copy(), paste: () => S.paste(),
@@ -250,6 +297,7 @@ const St = {
     uiPrompt(title, p.name, v => {
       v = v.trim() || p.type;
       if (Filter.has(v)) { toast('That name is not allowed'); return false; }
+      if (p.type === 'remote' || p.type === 'rfunc') v = v.replace(/[^\w]/g, '') || 'Remote';
       Studio.patch({ name: v.slice(0, 30) });
     }, 30);
   },
@@ -277,11 +325,12 @@ const St = {
   /* ---------- script editor ---------- */
   editScript() {
     const p = Studio.prim();
-    if (!p || !Studio.isScriptType(p.type)) return uiAlert('Select a Script or LocalScript first (or press Script / LocalScript to create one).');
-    modal('📝 ' + p.name + (p.type === 'script' ? ' (server)' : ' (local)'),
-      `<textarea id="sc" class="code" rows="13" maxlength="20000" spellcheck="false" autocapitalize="off" autocorrect="off">${esc(p.code || '')}</textarea>
+    if (!p || !Studio.isScriptType(p.type)) return uiAlert('Select a Script, LocalScript or ModuleScript first (or press one of the Script buttons to create it).');
+    const kind = p.type === 'script' ? ' (server)' : p.type === 'module' ? ' (module)' : ' (local)';
+    modal('📝 ' + p.name + kind,
+      `<textarea id="sc" class="code" rows="13" maxlength="300000" spellcheck="false" autocapitalize="off" autocorrect="off">${esc(p.code || '')}</textarea>
       <p class="muted">Scripts only run while playing. They cannot touch accounts, wallet or storage.</p>`, [
-      { label: '💾 Apply', fn: () => { Studio.patch({ code: byId('sc').value.slice(0, 20000) }); toast('Script updated'); } },
+      { label: '💾 Apply', fn: () => { Studio.patch({ code: byId('sc').value.slice(0, 300000) }); toast('Script updated'); } },
       { label: 'Help', cls: 'gray', fn: () => { showText('Script API', 'Quick reference', SCRIPT_HELP); } },
       { label: 'Close', cls: 'gray' }]);
   },
@@ -289,7 +338,7 @@ const St = {
   /* ---------- explorer / properties ---------- */
   list() { this.explorer(); this.props(); },
   explorer() {
-    const S = Studio, N = S.nodes, m = Tree.map(N), by = { WS: [], SS: [], SP: [], SG: [] };
+    const S = Studio, N = S.nodes, m = Tree.map(N), by = { WS: [], SS: [], SP: [], SG: [], ST: [] };
     N.forEach(n => { const k = n.parent || 'WS'; (by[k] = by[k] || []).push(n); });
     const icon = n => {
       if (n.type === 'model') return isItemName(n.name) ? '🗡' : '📦';
@@ -297,11 +346,15 @@ const St = {
       if (n.type === 'gui') return '🖼';
       if (n.type === 'btn') return '🔘';
       if (n.type === 'lbl') return '🏷';
+      if (n.type === 'remote') return '📡';
+      if (n.type === 'rfunc') return '🔁';
+      if (n.type === 'module') return n.off ? '⛔' : '📚';
       if (n.type === 'script') return n.off ? '⛔' : '📜';
       if (n.type === 'localscript') return n.off ? '⛔' : '🖥';
       if (this.type === 'avatar') return '🧱';
       const k = Tree.info(m, n).kind;
-      return n.spawn ? '🏁' : k === 'water' ? '💧' : k === 'lava' ? '🔥' : k === 'ladder' ? '🪜' : k === 'pad' ? '⏫' : k === 'seat' ? '🪑' : '🧱';
+      return n.spawn ? '🏁' : k === 'water' ? '💧' : k === 'lava' ? '🔥' : k === 'ladder' ? '🪜' : k === 'pad' ? '⏫' : k === 'seat' ? '🪑'
+        : n.shape === 'ball' ? '⚽' : n.shape === 'cyl' ? '🛢' : '🧱';
     };
     const row = (n, d) => {
       const kids = by[n.id] || [], hasK = kids.length > 0, open = n.open !== false;
@@ -313,7 +366,7 @@ const St = {
     const sec = (title, k) => `<div class="tr hd">${title}</div>` + (by[k] || []).map(n => row(n, 1)).join('');
     const el = $('#stExpBody'), top = el.scrollTop;
     el.innerHTML = this.type === 'map'
-      ? sec('🌐 Workspace', 'WS') + sec('📜 ServerScript', 'SS') + sec('🎒 StarterPack', 'SP') + sec('🖼 StarterGui', 'SG')
+      ? sec('🌐 Workspace', 'WS') + sec('📜 ServerScript', 'SS') + sec('🎒 StarterPack', 'SP') + sec('🖼 StarterGui', 'SG') + sec('📡 StoreServer', 'ST')
       : sec('🎩 Accessory', 'WS');
     el.scrollTop = top;
   },
@@ -339,6 +392,7 @@ const St = {
       set('px', p.x); set('py', p.y); set('pz', p.z); set('pw', p.w); set('ph', p.h); set('pd', p.d);
       set('pc', p.color); set('ps', p.spawn); set('pa', p.attach || '');
       set('pAn', p.anch !== false); set('pCo', p.col !== false);
+      set('pshape', p.shape || 'block'); set('prx', p.rx || 0); set('pry', p.ry || 0); set('prz', p.rz || 0); set('ptr', p.t || 0);
     }
     if (p.type === 'btn' || p.type === 'lbl') {
       set('pgt', p.text || ''); set('pgx', p.gx); set('pgy', p.gy); set('pgw', p.gw); set('pgh', p.gh);
