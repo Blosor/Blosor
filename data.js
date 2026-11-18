@@ -17,7 +17,7 @@ const CONFIG = {
   ADMIN_EMAIL: 'ssaapp257@gmail.com',
   OWNER_CONTACT: 'ownerblosor@gmail.com',
   VOUCHER_SECRET: 'I-Love-U-MOM-TY',
-  OWNER_PUB: null,                        // paste the public key from Admin -> Generate moderation key
+  OWNER_PUB: {"crv":"P-256","ext":true,"key_ops":["verify"],"kty":"EC","x":"Ge430Ogr29e25NZd_QZH8MifPYw53lSpyA15L1t9Ntk","y":"FXCc7X_5v5-8BGPSzms16t47pmVxZ917MZhTgHkk3FE"},
   MAP_PRICE: 3500,
   ACC_PRICE: 1090,
   MARKET_CUT: 0.03,
@@ -25,8 +25,8 @@ const CONFIG = {
   MAX_PLAYERS_LIMIT: 50,
   MAX_PLACES: 100,
   MAX_ACC_DRAFTS: 100,
-  MAX_PARTS: 1500,
-  MAX_ACC_PARTS: 120,
+  MAX_PARTS: 10400,
+  MAX_ACC_PARTS: 250,
   MAX_PRICE: 100000000000000,
   MAX_STOCK: 10000000000
 };
@@ -135,13 +135,12 @@ const Mod = {
   },
   async verify(p) {
     try {
-      if (!CONFIG.OWNER_PUB || !p || typeof p.s !== 'string' || typeof p.sig !== 'string' || p.s.length > 200000) return false;
+      if (!CONFIG.OWNER_PUB || !p || typeof p.s !== 'string' || typeof p.sig !== 'string' || p.s.length > 1000000) return false;
       const key = await crypto.subtle.importKey('jwk', CONFIG.OWNER_PUB, this.alg, false, ['verify']);
       return await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, this.unb64(p.sig), new TextEncoder().encode(p.s));
     } catch (e) { return false; }
   },
 
-  // current moderation state of this device (owner side)
   state() {
     const g = {}, u = {}, us = DB.users();
     DB.games().forEach(x => { if (x.down) g[x.id] = x.downNote || 'Taken down'; });
@@ -160,13 +159,11 @@ const Mod = {
   },
   pack() { return DB.get('modpack', null); },
 
-  // a pack received from the network
   async consume(p) {
     if (!(await this.verify(p))) return;
     try { const l = JSON.parse(p.s); if (+l.v > this.list().v) this.apply(l); } catch (e) {}
   },
 
-  // sanitize and store a moderation list, then enforce it on this device
   apply(l) {
     if (!l || typeof l !== 'object') return;
     const id = s => /^[a-z0-9]{4,24}$/.test(String(s)), nm = s => /^[a-z0-9_]{3,20}$/.test(String(s));
@@ -180,7 +177,6 @@ const Mod = {
     DB.set('mod', c);
     Filter.add(c.words);
 
-    // games: hide / un-hide / remove on this device
     const gs = DB.games(); let ch = false;
     const keepG = gs.filter(g => !c.gone.includes(g.id));
     if (keepG.length !== gs.length) ch = true;
@@ -195,7 +191,6 @@ const Mod = {
     if (keepR.length !== rc.length) DB.set('recent', keepR);
     this.deducts();
   },
-  // GV deductions ordered by the owner: applied once per id for the logged-in player
   deducts() {
     const me = Auth.key(); if (!me) return;
     const done = DB.get('dedone', []); let ch = false;
@@ -256,9 +251,7 @@ const Auth = {
     if (us[id]) return id;
     return Object.keys(us).find(k => us[k].email === id) || null;
   },
-  // ban made on this device
   banOf(u) { return u && u.banned && (!u.banUntil || Date.now() < u.banUntil) ? u : null; },
-  // local ban or a ban from the owner's signed list
   banFor(k, u) {
     const l = this.banOf(u); if (l) return l;
     const m = Mod.list().users[k];
@@ -340,7 +333,6 @@ const Wallet = {
     DB.set('users', us);
     return true;
   },
-  // take away up to n (never below 0). Returns how much was taken.
   deduct(k, n) {
     const us = DB.users(); if (!us[k]) return 0;
     const t = Math.min(us[k].gv || 0, n);
