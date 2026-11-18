@@ -12,9 +12,7 @@ const cleanD = d => { // data sent through remote events: JSON only, small
 Object.assign(Game, {
 
   /* ---------- HUD ---------- */
-  srvCount() {
-    byId('srv').textContent = '👥 ' + (1 + Object.keys(this.remote).length) + '/' + this.maxP;
-  },
+  srvCount() { byId('srv').textContent = '👥 ' + (1 + Object.keys(this.remote).length) + '/' + this.maxP; },
   updHp() {
     const v = Math.ceil(this.hp);
     if (v === this._hpShown) return;
@@ -58,6 +56,29 @@ Object.assign(Game, {
     const el = byId('msg'); el.textContent = text; el.classList.remove('hidden');
     clearTimeout(this._mt); this._mt = setTimeout(() => el.classList.add('hidden'), secs * 1000);
   },
+  showHotbar(v) { this.hotbarOn = !!v; byId('hotbar').style.display = v ? '' : 'none'; },
+
+  /* ---------- animations: a script can force the standard pack for everyone ---------- */
+  applyAnim() {
+    this.av.setPack(this.animOK ? this.myPack : null);
+    Object.values(this.remote).forEach(r => r.av.setPack(this.animOK ? r.pack : null));
+  },
+
+  /* ---------- StoreServer data (saved on the host device) ---------- */
+  storeSet(k, v) {
+    if (!k) return;
+    try {
+      const s = JSON.stringify(v === undefined ? null : v); if (s.length > 20000) return;
+      if (!(k in this.store) && Object.keys(this.store).length >= 200) return;
+      this.store[k] = JSON.parse(s); this.storeSave();
+    } catch (e) {}
+  },
+  storeDel(k) { delete this.store[k]; this.storeSave(); },
+  storeSave() {
+    if (!this.gid || !this.isHost || this.test) return;
+    clearTimeout(this._sv);
+    this._sv = setTimeout(() => { DB.set('st_' + this.gid, this.store); }, 800);
+  },
 
   /* ---------- StarterGui ---------- */
   guiStyle(g) {
@@ -90,21 +111,34 @@ Object.assign(Game, {
     this.guiStyle(g);
   },
 
-  /* ---------- remote events (LocalScript <-> Script) ---------- */
+  /* ---------- remote events / functions (LocalScript <-> Script) ---------- */
+  rok(n) { return !this.rwhite || this.rnames.has(n); },
   remoteOp(mode, m) {
-    const n = String(m.n || '').slice(0, 30); if (!n) return;
-    const d = cleanD(m.d);
+    const n = String(m.n || '').slice(0, 30);
     if (mode === 'local') {
-      if (m.op !== 'rem') return;
-      if (this.isHost) ScriptHost.send({ t: 'rem', n, d, pid: this.myId });
-      else Net.send({ t: 'rem', n, d });
+      if (m.op === 'rem') {
+        if (!n || !this.rok(n)) return;
+        const d = cleanD(m.d);
+        if (this.isHost) ScriptHost.send({ t: 'rem', n, d, pid: this.myId }); else Net.send({ t: 'rem', n, d });
+      } else if (m.op === 'rinv') {
+        const c = num(m.c, 0, 1e9, 0);
+        if (!n || !this.rok(n)) return LocalHost.send({ t: 'rres', c, v: null });
+        const d = cleanD(m.d);
+        if (this.isHost) ScriptHost.send({ t: 'rinv', n, d, pid: this.myId, c }); else Net.send({ t: 'rinv', n, d, c });
+      }
     } else {
-      if (m.op !== 'remc') return;
-      const to = String(m.to || '*');
-      if (to === '*' || to === this.myId) LocalHost.send({ t: 'rem', n, d });
-      if (this.net && Net.isHost) {
-        if (to === '*') Net.send({ t: 'remc', n, d });
-        else if (this.remote[to]) Net.sendTo(to, { t: 'remc', n, d });
+      if (m.op === 'remc') {
+        if (!n || !this.rok(n)) return;
+        const d = cleanD(m.d), to = String(m.to || '*');
+        if (to === '*' || to === this.myId) LocalHost.send({ t: 'rem', n, d });
+        if (this.net && Net.isHost) {
+          if (to === '*') Net.send({ t: 'remc', n, d });
+          else if (this.remote[to]) Net.sendTo(to, { t: 'remc', n, d });
+        }
+      } else if (m.op === 'rret') {
+        const pid = String(m.pid || ''), v = cleanD(m.v), c = num(m.c, 0, 1e9, 0);
+        if (pid === this.myId) LocalHost.send({ t: 'rres', c, v });
+        else if (this.net && Net.isHost) Net.sendTo(pid, { t: 'rres', c, v });
       }
     }
   },
@@ -195,7 +229,7 @@ Object.assign(Game, {
   },
   playerAct(mode, id, a, m) {
     if (!['tp', 'hp', 'dmg', 'heal', 'kill', 'speed', 'jump', 'lay', 'stand'].includes(a)) return;
-    if (mode === 'local' && id !== this.myId) return; // a LocalScript can only change its own player
+    if (mode === 'local' && id !== this.myId) return;
     if (id === this.myId) return this.scriptAct(a, m);
     const r = this.remote[id];
     if (this.net && this.isHost && r) {
@@ -223,6 +257,7 @@ Object.assign(Game, {
         break;
       case 'light': this.env = Env.clean(Object.assign({}, this.env, o.o)); Env.apply(this.s, this.sun, this.env); break;
       case 'notify': this.notify(o.t, o.s); break;
+      case 'anim': this.animOK = !!o.v; this.applyAnim(); break;
       default: return;
     }
     if (rep && this.net && Net.isHost) Net.send({ t: 'op', o });
@@ -236,9 +271,10 @@ Object.assign(Game, {
       if (dyn && o.id[0] === 'l') return;
       if (!dyn && !this.touched.has(o.id)) return;
       const p = o.p;
-      out.push({ k: dyn ? 'spawn' : 'set', id: o.id, p: { name: p.name, x: p.x, y: p.y, z: p.z, w: p.w, h: p.h, d: p.d, color: p.color, visible: p.visible, collide: p.collide, anch: p.anch } });
+      out.push({ k: dyn ? 'spawn' : 'set', id: o.id, p: { name: p.name, x: p.x, y: p.y, z: p.z, w: p.w, h: p.h, d: p.d, color: p.color, visible: p.visible, collide: p.collide, anch: p.anch, shape: p.shape, rx: p.rx, ry: p.ry, rz: p.rz, t: p.t } });
     });
     out.push({ k: 'light', id: '', o: this.env });
+    out.push({ k: 'anim', id: '', v: this.animOK });
     return out;
   },
   netOp(o) {
@@ -253,6 +289,7 @@ Object.assign(Game, {
       o = { k, id, s: num(o.s, 0.05, 60, 1), x: num(o.x, -5000, 5000, 0), y: num(o.y, -5000, 5000, 0), z: num(o.z, -5000, 5000, 0) };
     } else if (k === 'del') o = { k, id };
     else if (k === 'light') o = { k, o: Env.part(o.o) };
+    else if (k === 'anim') o = { k, v: !!o.v };
     else if (k === 'notify') o = { k, t: Filter.mask(String(o.t || '').slice(0, 80)), s: num(o.s, 1, 10, 3) };
     else return;
     this.applyOp(o, false);
@@ -261,11 +298,11 @@ Object.assign(Game, {
   /* ---------- network ---------- */
   addRemote(pl) {
     if (!pl || pl.id === this.myId || this.remote[pl.id]) return;
-    const av = Net.cleanAv(pl.av), a = makeAvatar(av.colors, av.items, av.pack, av.face);
+    const av = Net.cleanAv(pl.av), a = makeAvatar(av.colors, av.items, this.animOK ? av.pack : null, av.face);
     a.g.rotation.order = 'YXZ';
     a.g.add(nameTag(String(pl.name || 'Player').slice(0, 20)));
     a.g.visible = false; this.s.add(a.g);
-    this.remote[pl.id] = { id: pl.id, name: String(pl.name || 'Player').slice(0, 20), av: a, x: 0, y: 0, z: 0, tx: 0, ty: 0, tz: 0,
+    this.remote[pl.id] = { id: pl.id, name: String(pl.name || 'Player').slice(0, 20), av: a, pack: av.pack, x: 0, y: 0, z: 0, tx: 0, ty: 0, tz: 0,
       face: 0, tf: 0, state: 'idle', seat: null, hp: 200, alive: true, sp: 0, seen: false, bub: null, bt: 0,
       lastT: 0, spd: 0, flags: 0, grace: performance.now() + 3000 };
     this.srvCount();
@@ -283,7 +320,6 @@ Object.assign(Game, {
   onLeft(id) { if (this.running) this.removeRemote(id); },
   onClosed() { if (!this.running) return; toast('The server was closed'); this.leave(); },
 
-  // host: remove a player and write a report for the owner
   kickPlayer(id, reason) {
     const r = this.remote[id]; if (!r) return;
     const l = DB.reports(); l.push({ id: uid(), name: r.name, game: this.gname, reason, time: Date.now() });
@@ -300,7 +336,7 @@ Object.assign(Game, {
         const id = host ? from : String(m.id || ''), r = this.remote[id];
         if (!r) break;
         const nx = num(m.x, -1e5, 1e5, r.tx), ny = num(m.y, -1e5, 1e5, r.ty), nz = num(m.z, -1e5, 1e5, r.tz);
-        if (host && r.seen) { // anti-exploit: sustained impossible horizontal speed
+        if (host && r.seen) {
           const now = performance.now(), dt = Math.max((now - r.lastT) / 1000, 0.02);
           r.spd = r.spd * 0.8 + (Math.hypot(nx - r.tx, nz - r.tz) / dt) * 0.2;
           if (now > r.grace && r.spd > 110) r.flags += dt; else r.flags = Math.max(0, r.flags - dt);
@@ -335,8 +371,16 @@ Object.assign(Game, {
         this.scriptAct(m.a, { x: num(q.x, -5000, 5000, 0), y: num(q.y, -5000, 5000, 0), z: num(q.z, -5000, 5000, 0), v: num(q.v, 0, 100000, 0) });
         break;
       }
-      case 'rem': if (host && this.remote[from]) ScriptHost.send({ t: 'rem', n: String(m.n || '').slice(0, 30), d: cleanD(m.d), pid: from }); break;
-      case 'remc': if (!host) LocalHost.send({ t: 'rem', n: String(m.n || '').slice(0, 30), d: cleanD(m.d) }); break;
+      case 'rem': { const n = String(m.n || '').slice(0, 30); if (host && this.remote[from] && this.rok(n)) ScriptHost.send({ t: 'rem', n, d: cleanD(m.d), pid: from }); break; }
+      case 'rinv': {
+        const n = String(m.n || '').slice(0, 30), c = num(m.c, 0, 1e9, 0);
+        if (!host || !this.remote[from]) break;
+        if (!this.rok(n)) { Net.sendTo(from, { t: 'rres', c, v: null }); break; }
+        ScriptHost.send({ t: 'rinv', n, d: cleanD(m.d), pid: from, c });
+        break;
+      }
+      case 'rres': if (!host) LocalHost.send({ t: 'rres', c: num(m.c, 0, 1e9, 0), v: cleanD(m.v) }); break;
+      case 'remc': { const n = String(m.n || '').slice(0, 30); if (!host && this.rok(n)) LocalHost.send({ t: 'rem', n, d: cleanD(m.d) }); break; }
       case 'watch': if (!host) this.srvWatch.add(String(m.id || '').slice(0, 12)); break;
       case 'touch': if (host && this.remote[from]) ScriptHost.send({ t: 'touch', id: String(m.id || '').slice(0, 12), pid: from }); break;
       case 'act': if (host && this.remote[from]) ScriptHost.send({ t: 'act', item: String(m.item || '').slice(0, 30), pid: from }); break;
@@ -382,7 +426,7 @@ Object.assign(Game, {
 
   /* ---------- items (tools from the StarterPack). Tap the screen to use. ---------- */
   buildHotbar() {
-    const hb = byId('hotbar'); hb.innerHTML = '';
+    const hb = byId('hotbar'); hb.innerHTML = ''; hb.style.display = '';
     this.tools.forEach((t, i) => {
       const b = document.createElement('button');
       b.textContent = (i + 1) + ' ' + t.name.slice(0, 10);
@@ -398,8 +442,10 @@ Object.assign(Game, {
     const cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2, cz = (b.z0 + b.z1) / 2;
     const sc = Math.min(1, 4 / Math.max(b.x1 - b.x0, b.y1 - b.y0, b.z1 - b.z0, 0.1));
     ps.forEach(p => {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(p.w * sc, p.h * sc, p.d * sc), Mats.flat(p.color || '#a3a2a5'));
-      m.position.set((p.x - cx) * sc, (p.y - cy) * sc, (p.z - cz) * sc); m.castShadow = true;
+      const m = new THREE.Mesh(partGeo(Object.assign({}, p, { w: p.w * sc, h: p.h * sc, d: p.d * sc }), ''), Mats.flat(p.color || '#a3a2a5'));
+      m.position.set((p.x - cx) * sc, (p.y - cy) * sc, (p.z - cz) * sc);
+      m.rotation.order = 'YXZ'; m.rotation.set((p.rx || 0) * D2, (p.ry || 0) * D2, (p.rz || 0) * D2);
+      m.castShadow = true;
       g.add(m);
     });
     return g;
@@ -485,7 +531,6 @@ Object.assign(Game, {
     joy.addEventListener('pointerup', this.ju);
     joy.addEventListener('pointercancel', this.ju);
 
-    // drag the screen = rotate camera. A short tap = use the held tool.
     const cv = byId('gameCanvas');
     let cid = null, lx = 0, ly = 0;
     this.pd = e => { if (cid !== null) return; cid = e.pointerId; lx = e.clientX; ly = e.clientY; this.tapS = { x: e.clientX, y: e.clientY, t: performance.now() }; };
