@@ -233,6 +233,49 @@ const Net = {
 addEventListener('beforeunload', () => Net.leave());
 
 /* =====================================================
+   FIREBASE HYBRID HELPER (Lobby / Online Games)
+   ===================================================== */
+const CloudLobby = {
+  cloudGames: [],
+  listening: false,
+
+  listen() {
+    if (this.listening || !window.blosorFirebase) return;
+    this.listening = true;
+    window.blosorFirebase.onValue("blosor/games", (val) => {
+      const now = Date.now();
+      const raw = Object.values(val || {}).filter(
+        x => x && typeof x === "object" && (!x.updatedAt || now - x.updatedAt < 600000)
+      );
+      if (typeof Lobby !== "undefined" && typeof Lobby.cleanList === "function") {
+        this.cloudGames = Lobby.cleanList(raw);
+      }
+      if (typeof Lobby !== "undefined" && typeof Lobby.draw === "function") {
+        Lobby.draw();
+      }
+    });
+  },
+
+  publishMine() {
+    if (!window.blosorFirebase || typeof Lobby === "undefined") return;
+    const mine = Lobby.mine();
+    mine.slice(0, 20).forEach(g => {
+      const clean = Lobby.clean(g);
+      if (!clean) return;
+      window.blosorFirebase.set(`blosor/games/${clean.id}`, {
+        ...clean,
+        updatedAt: Date.now()
+      }).catch(() => {});
+    });
+  }
+};
+
+window.addEventListener("blosor-firebase-ready", () => {
+  CloudLobby.listen();
+  CloudLobby.publishMine();
+});
+
+/* =====================================================
    LOBBY: peer-to-peer directory (games, friends, moderation)
    ===================================================== */
 const Lobby = {
@@ -394,6 +437,8 @@ const Lobby = {
     const end = st => { this.busy = false; this.status = st; this.draw(); };
     if (!me) { this.busy = false; return; }
     Mod.deducts();
+    CloudLobby.listen();
+    CloudLobby.publishMine();
     const friends = typeof Social !== 'undefined' ? Social.names() : [], mp = Mod.pack();
     if (mp) this.takeMod(mp);
     if (this.role === 'dir') {
@@ -411,7 +456,7 @@ const Lobby = {
       } else if (m.t === 'list') { this.list = this.cleanList(m.games).filter(g => !Mod.blocked(g.id)); finish('ok'); }
     }, r => {
       if (r === 'ok') return end('Online');
-      this.claim(ok => end(ok ? 'You are hosting the lobby' : 'Lobby unreachable (check your internet)'));
+      this.claim(ok => end(ok ? 'You are hosting the lobby' : (CloudLobby.cloudGames.length ? 'Online (Firebase)' : 'Lobby unreachable (check your internet)')));
     });
   },
 
@@ -439,7 +484,14 @@ const Lobby = {
   draw() {
     const box = byId('olist'); if (!box) return;
     const own = new Set(DB.games().map(g => g.id));
-    const l = this.list.filter(g => !own.has(g.id) && !Mod.blocked(g.id));
+    const mergedMap = new Map();
+    (Array.isArray(CloudLobby.cloudGames) ? CloudLobby.cloudGames : []).forEach(g => {
+      if (g && g.id) mergedMap.set(g.id, g);
+    });
+    (Array.isArray(this.list) ? this.list : []).forEach(g => {
+      if (g && g.id) mergedMap.set(g.id, g);
+    });
+    const l = Array.from(mergedMap.values()).filter(g => !own.has(g.id) && !Mod.blocked(g.id));
     box.innerHTML = `<div class="card"><h3>🌐 Online games</h3><div class="muted" style="margin-bottom:6px">${esc(this.status)}${this.busy ? ' ...' : ''}</div>` +
       (l.length ? l.map(g => `<div class="part"><span><b>${esc(g.name)}</b><br><span class="muted">by ${esc(g.author)} ${Auth.isVerified(g.owner) ? '<span class="vb">✔</span>' : ''} · Max ${g.max}</span></span>
         <span><button class="sm" onclick="Play.join('${g.id}')">▶ Play</button></span></div>`).join('')
