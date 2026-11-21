@@ -235,6 +235,35 @@
 </div>
 
 <script src="debug.js"></script>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
+  import { getDatabase, ref, set, push, onValue, remove } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-database.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyCOyNILBF8l7QHhiBupEJIbjxuqiYqouV8",
+    authDomain: "blosor-web-engine.firebaseapp.com",
+    databaseURL: "https://blosor-web-engine-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "blosor-web-engine",
+    storageBucket: "blosor-web-engine.firebasestorage.app",
+    messagingSenderId: "1043736229244",
+    appId: "1:1043736229244:web:7e1f2f94093b29b11320f9",
+    measurementId: "G-ZX2DDSD98F"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getDatabase(app);
+
+  // Helper global agar file JS Blosor (seperti net.js) bisa pakai Firebase
+  window.blosorFirebase = {
+    db: db,
+    ref: (path) => ref(db, path),
+    set: (path, val) => set(ref(db, path), val),
+    push: (path, val) => push(ref(db, path), val),
+    onValue: (path, cb) => onValue(ref(db, path), (snap) => cb(snap.val())),
+    remove: (path) => remove(ref(db, path))
+  };
+  window.dispatchEvent(new Event("blosor-firebase-ready"));
+</script>
 <script>
 /* Loader: loads every script in order and retries when the local server drops a file.
    Files marked optional (PeerJS) never block the app. */
